@@ -1,0 +1,2603 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Battery Architect - connection layer generator</title>
+<style>
+  :root {
+    --bg: #14171c; --panel: #1c2027; --panel2: #23282f; --line: #2e343d;
+    --text: #d9e0ea; --dim: #8b98a9; --accent: #4fc3f7; --warn: #ffb74d; --bad: #ef6b6b; --good: #7bd88f;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text); overflow: hidden;
+    font: 13px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  #app { display: grid; grid-template-columns: 268px 1fr 300px; height: 100vh; }
+  aside { background: var(--panel); overflow-y: auto; padding: 12px; }
+  #left { border-right: 1px solid var(--line); }
+  #right { border-left: 1px solid var(--line); }
+  h1 { font-size: 14px; margin: 0 0 2px; letter-spacing: .3px; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--dim); font-size: 11px; margin-bottom: 14px; }
+  section { margin-bottom: 16px; }
+  h2 {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .9px; color: var(--dim);
+    margin: 0 0 8px; font-weight: 600;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  h2 .mini {
+    font: inherit; font-size: 10px; letter-spacing: .5px; text-transform: uppercase;
+    background: transparent; border: 0; padding: 0; margin: 0; color: #5d6979; cursor: pointer;
+  }
+  h2 .mini:hover { background: transparent; color: var(--accent); }
+  h2 .mini.on { color: var(--accent); }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .row > label { flex: 0 0 84px; color: var(--dim); font-size: 11.5px; }
+  .row > .val { flex: 0 0 52px; text-align: right; font-variant-numeric: tabular-nums; font-size: 11.5px; }
+  /* one slider per block: the number and its reset sit above the track, which
+     leaves the whole panel width for the drag itself */
+  .sl { margin-bottom: 6px; }
+  .sl-top { display: flex; align-items: center; gap: 6px; }
+  .sl-top label { flex: 1 1 auto; color: var(--dim); font-size: 11.5px; cursor: default; }
+  .sl-top .val { font-variant-numeric: tabular-nums; font-size: 11.5px; color: #cfd7e2; min-width: 30px; text-align: right; }
+  .sl.changed .sl-top .val { color: var(--accent); }
+  .rst {
+    background: transparent; border: 0; border-radius: 3px; padding: 0; margin: 0;
+    width: 16px; height: 15px; line-height: 15px; font-size: 12px; color: #59667a; cursor: pointer;
+  }
+  .rst:hover { background: #ffffff12; color: var(--accent); }
+  .rst:active { transform: none; }
+  .sl.changed .rst { color: #9aa7b8; }
+  input[type=number], input[type=text], select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 5px; padding: 4px 6px; font: inherit; font-size: 12px; width: 100%; min-width: 0;
+  }
+  input[type=number]:focus, select:focus, input[type=text]:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  /* the sliders are drawn by hand so the accent fill, the thumb and the hit
+     area match the rest of the panel - and so the fill can follow the track
+     without the browser's own appearance */
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    display: block; width: 100%; height: 18px; margin: 0; padding: 0;
+    background: transparent; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 4px; border-radius: 3px;
+    background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--p, 50%),
+                                #333b45 var(--p, 50%), #333b45 100%);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 14px; height: 14px; margin-top: -5px; border-radius: 50%;
+    background: #dfe7f0; border: 2px solid var(--accent); box-shadow: 0 1px 3px #00000066;
+    transition: box-shadow .12s, background .12s;
+  }
+  input[type=range]:hover::-webkit-slider-thumb { background: #fff; box-shadow: 0 0 0 4px #4fc3f726; }
+  input[type=range]:active::-webkit-slider-thumb { background: #fff; box-shadow: 0 0 0 6px #4fc3f733; }
+  input[type=range]:focus { outline: none; }
+  input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px #4fc3f766; }
+  input[type=range]::-moz-range-track { height: 4px; border-radius: 3px; background: #333b45; }
+  input[type=range]::-moz-range-progress { height: 4px; border-radius: 3px; background: var(--accent); }
+  input[type=range]::-moz-range-thumb {
+    width: 12px; height: 12px; border-radius: 50%; background: #dfe7f0;
+    border: 2px solid var(--accent); box-shadow: 0 1px 3px #00000066;
+  }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 9px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  button:hover { border-color: #3d4653; background: #2a3038; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: #1d4a5e; border-color: #2b6a85; }
+  button.primary:hover { background: #23596f; }
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .btns.one { grid-template-columns: 1fr; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 6px 4px; }
+  .seg button.on { background: #1d4a5e; color: #cdeefb; }
+  /* a view option, styled as a line rather than a button: it changes what is
+     drawn, not what is in the document. A sheet option that lives among the
+     sliders borrows the same line, since it is a switch and not a command. */
+  .tog {
+    display: flex; align-items: center; gap: 7px; margin-top: 8px;
+    padding: 4px 6px; border-radius: 5px; cursor: pointer; user-select: none;
+  }
+  .tog:hover { background: #ffffff08; }
+  .tog input { flex: 0 0 auto; width: 13px; height: 13px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+  .tog > span { flex: 1 1 auto; font-size: 11.5px; color: #b9c4d1; }
+  .tog input:checked + span { color: #cdeefb; }
+  .tog kbd {
+    flex: 0 0 auto; font: inherit; font-size: 9.5px; color: var(--dim); line-height: 14px;
+    border: 1px solid var(--line); border-radius: 3px; padding: 0 4px;
+  }
+  .palette { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; }
+  .chip {
+    height: 26px; border-radius: 5px; border: 2px solid transparent; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #10151b;
+    position: relative;
+  }
+  .chip.on { border-color: #fff; box-shadow: 0 0 0 2px #0006; }
+  .chip .n { opacity: .75; }
+  #stage { position: relative; background: #101318; overflow: hidden; }
+  #cv { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  #hint {
+    position: absolute; left: 10px; bottom: 10px; right: 10px; color: var(--dim);
+    font-size: 11px; pointer-events: none; text-shadow: 0 1px 3px #000;
+  }
+  #hint b { color: #b6c2d1; font-weight: 600; }
+  .stat { display: flex; justify-content: space-between; font-size: 11.5px; padding: 2px 0; }
+  .stat span:last-child { font-variant-numeric: tabular-nums; color: #c6d0dc; }
+  .check { display: flex; gap: 6px; font-size: 11.5px; padding: 3px 0; line-height: 1.35; }
+  .check .dot { flex: 0 0 6px; height: 6px; border-radius: 50%; margin-top: 5px; }
+  .ok { color: var(--good); }
+  .warn { color: var(--warn); }
+  .bad { color: var(--bad); }
+  ul { list-style: none; margin: 0; padding: 0; }
+  #islands li { display: flex; align-items: center; gap: 7px; padding: 3px 0; font-size: 11.5px; }
+  #islands .sw { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 12px; }
+  #islands .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #islands .ct { color: var(--dim); font-variant-numeric: tabular-nums; }
+  #islands .x { color: var(--dim); cursor: pointer; padding: 0 3px; }
+  #islands .x:hover { color: var(--bad); }
+  #rowsList { max-height: 196px; overflow-y: auto; overflow-x: hidden; }
+  #rowsList li { display: flex; align-items: center; gap: 5px; padding: 2px 0; font-size: 11.5px; }
+  #rowsList li .rl { flex: 0 0 18px; text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+  #rowsList li .rc { flex: 1; color: #c6d0dc; font-variant-numeric: tabular-nums; }
+  #rowsList li .rb {
+    flex: 0 0 21px; height: 19px; padding: 0; line-height: 1; font-size: 13px;
+    border-radius: 4px; color: #b9c4d1;
+  }
+  #rowsList li.hot { background: #ffffff10; border-radius: 4px; }
+  #rowsList li.hot .rc { color: #fff; }
+  #selBar {
+    position: absolute; left: 50%; bottom: 34px; transform: translateX(-50%);
+    display: none; align-items: center; gap: 7px; z-index: 5; white-space: nowrap;
+    padding: 5px 5px 5px 12px; border-radius: 8px; font-size: 12px; color: #c6d0dc;
+    background: #1b222b; border: 1px solid #3a4451; box-shadow: 0 6px 22px #000a;
+  }
+  #selBar.show { display: flex; }
+  #selBar b { color: #fff; font-variant-numeric: tabular-nums; }
+  #selBar button { height: 25px; padding: 0 10px; line-height: 1; }
+  #selBar .del { background: #6f2f2f; border-color: #9c4545; color: #ffe0e0; }
+  #selBar .del:hover { background: #8a3b3b; border-color: #b95454; }
+  #toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    background: #2b323b; border: 1px solid var(--line); border-radius: 7px;
+    padding: 8px 14px; font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; }
+  .note { color: var(--dim); font-size: 11px; line-height: 1.4; }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="left">
+    <h1>Battery <span>Architect</span></h1>
+    <div class="sub">connection layers for cutting</div>
+
+    <section>
+      <h2>Cells</h2>
+      <div class="row">
+        <label>Type</label>
+        <select id="cellType">
+          <option value="18650">18650</option>
+          <option value="21700" selected>21700</option>
+          <option value="26650">26650</option>
+          <option value="32700">32700</option>
+          <option value="4680">4680</option>
+          <option value="custom">custom</option>
+        </select>
+      </div>
+      <div class="row"><label>Diameter</label><input type="number" id="cellD" value="21.2" step="0.1" min="5"><span class="val">mm</span></div>
+      <div class="row"><label>Gap</label><input type="number" id="gap" value="0.6" step="0.1" min="0"><span class="val">mm</span></div>
+      <div class="row"><label>Rows</label><input type="number" id="rows" value="13" step="1" min="1"></div>
+      <div class="row"><label>Per row</label><input type="number" id="cols" value="8" step="1" min="1"></div>
+      <div class="row">
+        <label>Packing</label>
+        <select id="arrangement">
+          <option value="hex" selected>staggered</option>
+          <option value="square">square</option>
+        </select>
+      </div>
+      <div class="btns" style="margin-top:6px">
+        <button id="btnFill">Fill grid</button>
+        <button id="btnClear">Empty</button>
+      </div>
+      <div class="seg" style="margin-top:6px">
+        <button id="btnRotL" title="Rotate the whole layout 90&deg; anticlockwise">&#8634; 90&deg;</button>
+        <button id="btnRotR" title="Rotate the whole layout 90&deg; clockwise">90&deg; &#8635;</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Tools</h2>
+      <div class="seg">
+        <button id="btnToolPaint" class="on" title="Click or drag over cells to add them to the selected island">Paint</button>
+        <button id="btnToolDel" title="Click cells to pick them, then Remove - nothing leaves the pack until you confirm">Remove</button>
+        <button id="btnToolFlip" title="Click a cell to turn it over">Flip</button>
+      </div>
+      <div class="note" style="margin-top:6px" id="toolNote">Paint: drag over cells to join them to the highlighted island. <b>Shift</b> paints the whole row, right-click erases.</div>
+    </section>
+
+    <section>
+      <h2>Rows</h2>
+      <ul id="rowsList"></ul>
+      <div class="btns" style="margin-top:6px">
+        <button id="btnRowAdd" title="Add a row at the bottom">+ row</button>
+        <button id="btnRowDel" title="Remove the bottom row">&minus; row</button>
+      </div>
+      <div class="note" style="margin-top:6px"><b>&minus;</b> and <b>+</b> take one cell off or add one to that row. Hold <b>Shift</b> to work on the left end instead of the right.</div>
+    </section>
+
+    <section>
+      <h2>Face</h2>
+      <div class="seg">
+        <button id="btnTop" class="on">TOP sheet</button>
+        <button id="btnBottom">BOTTOM sheet</button>
+      </div>
+      <label class="tog" for="ghostOther" title="Draw the other sheet's plate on this view too, dashed, where it lies in the pack (X)">
+        <input type="checkbox" id="ghostOther">
+        <span>See the other sheet through</span>
+        <kbd>X</kbd>
+      </label>
+      <div class="note" id="faceNote" style="margin-top:6px">The bottom sheet is the exact mirror of the top; positions are edited on the top view only. The box draws the other plate dashed, through this one, where it lies in the pack.</div>
+    </section>
+
+    <section>
+      <h2>Islands &mdash; colour = one piece</h2>
+      <div class="palette" id="palette"></div>
+      <div class="btns" style="margin-top:8px">
+        <button id="btnStripe">Auto stripe</button>
+        <button id="btnClearFace">Clear face</button>
+      </div>
+      <div class="row" style="margin-top:8px"><label>Stripe rows</label><input type="number" id="stripeRows" value="2" step="1" min="1"></div>
+    </section>
+
+    <section id="geom">
+      <h2>Geometry <button class="mini" id="btnGeomReset" title="Put every geometry slider back to its default">reset</button></h2>
+
+      <div class="seg" id="cutSeg" style="margin-bottom:6px">
+        <button id="btnCutPlate" class="on" title="One solid piece per island: every pad and every strap, unioned">Plate</button>
+        <button id="btnCutLines" title="Cut the sheet down to the weld lines: a pad on every spot, one band along the lines between them, and the fields between the bands cut away">Weld lines</button>
+      </div>
+      <div class="note" id="cutNote" style="margin-bottom:8px">Plate: one solid piece per island, the union of every pad and strap &mdash; strongest, and the shortest current path.</div>
+
+      <label class="tog" for="guideOn" style="margin-top:0" title="Cut one short slit through every weld pad, at the cell centre: a line you can see, feel and weld by">
+        <input type="checkbox" id="guideOn">
+        <span>Cell guide slits</span>
+      </label>
+
+      <div class="sl" id="guideLRow" hidden>
+        <div class="sl-top">
+          <label for="guideL">Guide L</label>
+          <span class="val" id="guideLv">8.0</span>
+          <button class="rst" data-for="guideL" title="Put Guide L back to 8 mm">&#8634;</button>
+        </div>
+        <input type="range" id="guideL" data-key="guideL" data-label="Guide L" data-def="8" data-dig="1"
+               min="2" max="16" step="0.5" value="8" aria-label="Guide slit length, millimetres">
+      </div>
+
+      <div class="sl">
+        <div class="sl-top">
+          <label for="padD">Pad D</label>
+          <span class="val" id="padDv">18.0</span>
+          <button class="rst" data-for="padD" title="Put Pad D back to 18 mm">&#8634;</button>
+        </div>
+        <input type="range" id="padD" data-key="padD" data-label="Pad D" data-def="18" data-dig="1"
+               min="6" max="26" step="0.5" value="18" aria-label="Weld pad diameter, millimetres">
+      </div>
+
+      <div class="sl">
+        <div class="sl-top">
+          <label for="bridgeW">Strap W</label>
+          <span class="val" id="bridgeWv">18.0</span>
+          <button class="rst" data-for="bridgeW" title="Put Strap W back to 18 mm">&#8634;</button>
+        </div>
+        <input type="range" id="bridgeW" data-key="bridgeW" data-label="Strap W" data-def="18" data-dig="1"
+               min="1" max="26" step="0.5" value="18" aria-label="Strap width, millimetres">
+      </div>
+
+      <div class="sl">
+        <div class="sl-top">
+          <label for="kerf">Kerf</label>
+          <span class="val" id="kerfv">0.10</span>
+          <button class="rst" data-for="kerf" title="Put Kerf back to 0.10 mm">&#8634;</button>
+        </div>
+        <input type="range" id="kerf" data-key="kerf" data-label="Kerf" data-def="0.1" data-dig="2"
+               min="0" max="1" step="0.01" value="0.1" aria-label="Cutting kerf, millimetres">
+      </div>
+
+      <div class="sl">
+        <div class="sl-top">
+          <label for="margin">Margin</label>
+          <span class="val" id="marginv">8</span>
+          <button class="rst" data-for="margin" title="Put Margin back to 8 mm">&#8634;</button>
+        </div>
+        <input type="range" id="margin" data-key="margin" data-label="Margin" data-def="8" data-dig="0"
+               min="0" max="40" step="1" value="8" aria-label="Margin around the pack, millimetres">
+      </div>
+
+      <div class="sl">
+        <div class="sl-top">
+          <label for="step">Precision</label>
+          <span class="val" id="stepv">0.10</span>
+          <button class="rst" data-for="step" title="Put Precision back to 0.10 mm">&#8634;</button>
+        </div>
+        <input type="range" id="step" data-key="step" data-label="Precision" data-def="0.1" data-dig="2"
+               min="0.05" max="0.4" step="0.01" value="0.1" aria-label="Contour precision, millimetres">
+      </div>
+
+      <div class="sl" id="lineAngleRow" hidden>
+        <div class="sl-top">
+          <label for="lineAngle">Angle</label>
+          <span class="val" id="lineAnglev">90&#176;</span>
+          <button class="rst" data-for="lineAngle" title="Put Angle back to 90&#176;">&#8634;</button>
+        </div>
+        <input type="range" id="lineAngle" data-key="lineAngle" data-label="Angle" data-def="90" data-dig="0" data-unit="&#176;"
+               min="0" max="90" step="30" value="90" aria-label="Direction of the weld-line bands and of the guide slits, degrees">
+      </div>
+
+      <div class="note">Drag a slider &mdash; the sheet follows while the thumb is still down, and one <b>Ctrl+Z</b> undoes the whole drag. <b>&#8634;</b> or a double-click resets one slider, <b>reset</b> does all of them.</div>
+      <div class="note" style="margin-top:4px">Raise Strap W to about the cell pitch for a solid plate; lower it for narrow nickel straps. The weld-line cut needs the strap under about half the pitch, or the bands meet and the slots close up. Guide slits are 1.2 mm wide, keep a rim of pad at both ends, and can sit on either cut style.</div>
+    </section>
+  </aside>
+
+  <main id="stage">
+    <canvas id="cv"></canvas>
+    <div id="selBar">
+      <span><b id="selCount">0</b> cells picked</span>
+      <button id="btnSelDel" class="del" title="Take the picked cells out of the pack (Del)">Remove</button>
+      <button id="btnSelClear" title="Drop the selection (Esc)">Clear</button>
+    </div>
+    <div id="hint"><b>Click</b> paint &middot; <b>Shift+click</b> whole row &middot; <b>Right-click</b> erase &middot; <b>Del</b> remove picked &middot; <b>Esc</b> unpick &middot; <b>F</b> flip cell &middot; <b>R</b> rotate &middot; <b>X</b> see through &middot; <b>Ctrl+Z</b> undo &middot; <b>Wheel</b> zoom &middot; <b>Middle-drag</b> pan</div>
+  </main>
+
+  <aside id="right">
+    <section>
+      <h2>Sheet</h2>
+      <div class="stat"><span>Size</span><span id="sSize">-</span></div>
+      <div class="stat"><span>Cells</span><span id="sCells">-</span></div>
+      <div class="stat"><span>Polarity</span><span id="sPol">-</span></div>
+      <div class="stat"><span>Islands</span><span id="sIslands">-</span></div>
+      <div class="stat"><span>Metal area</span><span id="sArea">-</span></div>
+      <div class="stat"><span>Build</span><span id="sTime">-</span></div>
+    </section>
+
+    <section>
+      <h2>Checks</h2>
+      <ul id="checks"></ul>
+    </section>
+
+    <section>
+      <h2>Islands on this face</h2>
+      <ul id="islands"></ul>
+    </section>
+
+    <section>
+      <h2>Export</h2>
+      <div class="btns" style="margin-bottom:6px">
+        <button id="btnSvg" class="primary">SVG both</button>
+        <button id="btnDxf" class="primary">DXF both</button>
+      </div>
+      <div class="btns" style="margin-bottom:6px">
+        <button id="btnSvgTop">SVG top</button>
+        <button id="btnSvgBot">SVG bottom</button>
+        <button id="btnDxfTop">DXF top</button>
+        <button id="btnDxfBot">DXF bottom</button>
+      </div>
+      <div class="btns one" style="margin-bottom:6px">
+        <button id="btnPrint">Assembly map (1:1 SVG)</button>
+      </div>
+      <div class="btns" style="margin-bottom:8px">
+        <button id="btnSave">Save .json</button>
+        <button id="btnLoad">Load .json</button>
+      </div>
+      <input type="file" id="file" accept=".json,application/json" style="display:none">
+      <div class="note">SVG opens in any browser: print at 100% for a paper template, or send straight to a laser cutter. DXF is R12 in millimetres.</div>
+    </section>
+  </aside>
+</div>
+<div id="toast"></div>
+
+<script src="geometry.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var G = window.BAGeo;
+  var cv = $('cv');
+  var ctx = cv.getContext('2d');
+
+  var PALETTE = ['#4fc3f7', '#aed581', '#ffb74d', '#ba68c8', '#4db6ac', '#e57373',
+                 '#fff176', '#9575cd', '#f06292', '#90a4ae', '#a1887f', '#7986cb'];
+
+  var S = {
+    doc: null,
+    face: 'top',
+    ghost: false,
+    sel: null,
+    hover: null,
+    tool: 'paint',
+    pick: new Set(),
+    pickBase: null,
+    marquee: null,
+    zoom: 3,
+    px: 0, py: 0,
+    vw: 1, vh: 1,
+    frame: null,
+    sheets: { top: null, bottom: null },
+    cache: { top: new Map(), bottom: new Map() },
+    drc: [],
+    buildMs: 0,
+    dragging: false,
+    pan: null,
+    paintMode: null,
+    dirty: true,
+    anim: [],
+    hiRow: null,
+    strokeBefore: null,
+    strokeFrame: null,
+    animAnchor: null
+  };
+
+  /* people who ask their system to tone motion down get the final picture
+     straight away - the build is fast enough that nothing is lost */
+  var REDUCED = false;
+  try {
+    REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch (e) { }
+  var ANIM_GROW = 240, ANIM_SHRINK = 210;
+
+  /* ------------------------------------------------------------------ */
+  /* document                                                            */
+  /* ------------------------------------------------------------------ */
+
+  function defaultDoc() {
+    var doc = {
+      version: 1,
+      name: 'my pack',
+      cellType: '21700',
+      arrangement: 'hex',
+      cells: [],
+      islands: { top: [], bottom: [] },
+      params: {
+        cellD: 21.2, gap: 0.6, pitch: 21.8, padD: 18, bridgeW: 18,
+        kerf: 0.1, margin: 8, step: 0.1,
+        cut: 'plate', lineAngle: 90, guides: false, guideL: 8
+      }
+    };
+    fillGrid(doc, 13, 8);
+    return doc;
+  }
+
+  function fillGrid(doc, rows, cols) {
+    var p = doc.params;
+    p.pitch = p.cellD + p.gap;
+    var hex = doc.arrangement !== 'square';
+    var rowH = hex ? p.pitch * Math.sqrt(3) / 2 : p.pitch;
+    var cells = [];
+    var n = 0;
+    for (var r = 0; r < rows; r++) {
+      var odd = hex && (r % 2 === 1);
+      var cnt = odd ? Math.max(1, cols - 1) : cols;
+      var xo = odd ? p.pitch / 2 : 0;
+      for (var c = 0; c < cnt; c++) {
+        cells.push({ id: 'c' + (n++), x: c * p.pitch + xo, y: r * rowH, flip: false });
+      }
+    }
+    doc.cells = cells;
+    /* keep the quarter turn: "fill grid" must reproduce what is on screen */
+    var turns = Math.round((((doc.rot || 0) % 360 + 360) % 360) / 90) % 4;
+    for (var t = 0; t < turns; t++) G.rotateCells(cells, true);
+    doc.islands = { top: [], bottom: [] };
+  }
+
+  function rowsOf(doc) {
+    var ys = {};
+    for (var i = 0; i < doc.cells.length; i++) ys[Math.round(doc.cells[i].y * 100)] = doc.cells[i].y;
+    var list = Object.keys(ys).map(function (k) { return ys[k]; });
+    list.sort(function (a, b) { return a - b; });
+    return list;
+  }
+
+  function cellsInRows(doc, ys, from, count) {
+    var lo = ys[from], hi = ys[Math.min(ys.length - 1, from + count - 1)];
+    return doc.cells.filter(function (c) { return c.y >= lo - 0.01 && c.y <= hi + 0.01; }).map(function (c) { return c.id; });
+  }
+
+  /* Cells are grouped into rows by their y. Nothing stores a row number, so
+     this is the only definition of a row there is - which is also why adding
+     or removing a cell can never leave a stale row index behind. */
+  function rowTol() { return Math.max(2, S.doc.params.pitch * 0.45); }
+
+  function cellsInRow(y) {
+    var tol = rowTol();
+    return S.doc.cells
+      .filter(function (c) { return Math.abs(c.y - y) <= tol; })
+      .sort(function (a, b) { return a.x - b.x; });
+  }
+
+  function nextCellId() {
+    var n = 0;
+    for (var i = 0; i < S.doc.cells.length; i++) {
+      var m = /^c(\d+)$/.exec(S.doc.cells[i].id);
+      if (m) n = Math.max(n, parseInt(m[1], 10) + 1);
+    }
+    return 'c' + n;
+  }
+
+  /* A new cell must not be left dangling: on each face it joins whichever
+     island owns the nearest existing cell. That keeps "every terminal is
+     connected" true without the user having to paint it twice. */
+  function attachNearest(cell) {
+    ['top', 'bottom'].forEach(function (face) {
+      var best = null, bd = Infinity;
+      var list = S.doc.islands[face];
+      for (var i = 0; i < list.length; i++) {
+        for (var k = 0; k < list[i].cells.length; k++) {
+          var c = findCell(list[i].cells[k]);
+          if (!c) continue;
+          var dx = c.x - cell.x, dy = c.y - cell.y;
+          var d = dx * dx + dy * dy;
+          if (d < bd) { bd = d; best = list[i]; }
+        }
+      }
+      if (best) best.cells.push(cell.id);
+    });
+  }
+
+  function addCellToRow(y, atLeft) {
+    var row = cellsInRow(y);
+    if (!row.length) return null;
+    var p = S.doc.params;
+    var ref = atLeft ? row[0] : row[row.length - 1];
+    var cell = {
+      id: nextCellId(),
+      x: r4(atLeft ? ref.x - p.pitch : ref.x + p.pitch),
+      y: ref.y,
+      flip: !!ref.flip
+    };
+    S.doc.cells.push(cell);
+    attachNearest(cell);
+    return cell;
+  }
+
+  function removeCellFromRow(y, atLeft) {
+    var row = cellsInRow(y);
+    if (!row.length) return null;
+    var victim = atLeft ? row[0] : row[row.length - 1];
+    var label = cellIndex(victim.id) + 1;
+    return deleteCell(victim.id) ? label : null;
+  }
+
+  /* a whole new row at the bottom, staggered like the one above it */
+  function addRow() {
+    var rows = rowsOf(S.doc);
+    var p = S.doc.params;
+    var hex = S.doc.arrangement !== 'square';
+    var rowH = hex ? p.pitch * Math.sqrt(3) / 2 : p.pitch;
+    var y = rows.length ? rows[rows.length - 1] + rowH : 0;
+    var last = rows.length ? cellsInRow(rows[rows.length - 1]) : [];
+    if (!last.length) return;
+    var stagger = hex && (last[0].x > 1) ? 0 : (hex ? p.pitch / 2 : 0);
+    if (!hex) stagger = 0;
+    var added = [];
+    for (var i = 0; i < last.length; i++) {
+      var cell = {
+        id: nextCellId(),
+        x: r4(last[i].x + stagger),
+        y: r4(y),
+        flip: !!last[i].flip
+      };
+      S.doc.cells.push(cell);
+      added.push(cell);
+    }
+    added.forEach(attachNearest);
+  }
+
+  function delRow() {
+    var rows = rowsOf(S.doc);
+    if (!rows.length) return 0;
+    var row = cellsInRow(rows[rows.length - 1]);
+    row.forEach(function (c) { deleteCell(c.id); });
+    return row.length;
+  }
+
+  function r4(v) { return Math.round(v * 1e4) / 1e4; }
+
+  function renderRows() {
+    var ul = $('rowsList');
+    if (!ul) return;
+    var ys = rowsOf(S.doc);
+    var tol = rowTol();
+    ul.innerHTML = '';
+    ys.forEach(function (y, i) {
+      var row = cellsInRow(y);
+      var li = document.createElement('li');
+      if (S.hiRow !== null && Math.abs(S.hiRow - y) <= tol) li.className = 'hot';
+      li.innerHTML = '<span class="rl">' + (i + 1) + '</span>' +
+                     '<span class="rc">' + row.length + ' cell' + (row.length === 1 ? '' : 's') + '</span>' +
+                     '<button class="rb" title="remove the last cell of this row (&minus;)">&#8722;</button>' +
+                     '<button class="rb" title="add a cell to this row (+)">&#43;</button>';
+      var btns = li.querySelectorAll('.rb');
+      btns[0].onclick = function (ev) { rowStep(y, ev.shiftKey, 'del'); };
+      btns[1].onclick = function (ev) { rowStep(y, ev.shiftKey, 'add'); };
+      li.onmouseenter = function () { S.hiRow = y; S.dirty = true; li.classList.add('hot'); };
+      li.onmouseleave = function () { S.hiRow = null; S.dirty = true; li.classList.remove('hot'); };
+      ul.appendChild(li);
+    });
+  }
+
+  function rowStep(y, atLeft, what) {
+    var n0 = S.doc.cells.length;
+    var before = REDUCED ? null : snapPrims(['top', 'bottom']);
+    var f0 = frameSig();
+    var msg;
+    snapshot();
+    if (what === 'add') {
+      var cell = addCellToRow(y, atLeft);
+      if (!cell) { toast('That row is gone'); return; }
+      msg = (S.doc.cells.length - n0) + ' cell added at the ' + (atLeft ? 'left' : 'right') +
+            ' - ' + S.doc.cells.length + ' in the pack';
+    } else {
+      var label = removeCellFromRow(y, atLeft);
+      if (label === null) { toast('That row is empty'); return; }
+      msg = 'Cell ' + label + ' removed - ' + S.doc.cells.length + ' left';
+    }
+    finishEdit(before, f0, msg);
+  }
+
+  function autoStripe() {
+    var doc = S.doc;
+    var ys = rowsOf(doc);
+    var k = Math.max(1, Math.min(12, parseInt($('stripeRows').value, 10) || 2));
+    var off = Math.max(1, Math.round(k / 2));
+    doc.islands = { top: [], bottom: [] };
+    var ci = 0;
+    function add(face, from, count) {
+      var ids = cellsInRows(doc, ys, from, count);
+      if (!ids.length) return;
+      var tag = (face === 'top' ? 't' : 'b') + doc.islands[face].length;
+      doc.islands[face].push({
+        id: tag,
+        name: (face === 'top' ? 'TOP ' : 'BOT ') + (doc.islands[face].length + 1),
+        color: PALETTE[ci++ % PALETTE.length],
+        cells: ids
+      });
+    }
+    for (var r = 0; r < ys.length; r += k) add('top', r, k);
+    if (off > 0) add('bottom', 0, off);
+    for (var r2 = off; r2 < ys.length; r2 += k) add('bottom', r2, k);
+
+    /* alternate polarity band by band so each top island has one terminal
+       sign on the top face; bottom islands then become series junctions */
+    for (var i = 0; i < doc.islands.top.length; i++) {
+      var flip = (i % 2 === 1);
+      for (var j = 0; j < doc.islands.top[i].cells.length; j++) {
+        var c = findCell(doc.islands.top[i].cells[j]);
+        if (c) c.flip = flip;
+      }
+    }
+    S.sel = doc.islands[S.face].length ? doc.islands[S.face][0].id : null;
+  }
+
+  function findCell(id) {
+    for (var i = 0; i < S.doc.cells.length; i++) if (S.doc.cells[i].id === id) return S.doc.cells[i];
+    return null;
+  }
+
+  function cellIndex(id) {
+    for (var i = 0; i < S.doc.cells.length; i++) if (S.doc.cells[i].id === id) return i;
+    return -1;
+  }
+
+  function islandById(face, id) {
+    var list = S.doc.islands[face];
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+
+  function nextColor() {
+    var used = {};
+    ['top', 'bottom'].forEach(function (f) {
+      S.doc.islands[f].forEach(function (i) { used[i.color] = 1; });
+    });
+    for (var i = 0; i < PALETTE.length; i++) if (!used[PALETTE[i]]) return PALETTE[i];
+    return PALETTE[Object.keys(used).length % PALETTE.length];
+  }
+
+  function addIsland(face) {
+    var list = S.doc.islands[face];
+    var id = face[0] + Date.now().toString(36) + list.length;
+    var isl = {
+      id: id,
+      name: (face === 'top' ? 'TOP ' : 'BOT ') + (list.length + 1),
+      color: nextColor(),
+      cells: []
+    };
+    list.push(isl);
+    S.sel = id;
+    return isl;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* mutations                                                           */
+  /* ------------------------------------------------------------------ */
+
+  function detach(face, cellId) {
+    var list = S.doc.islands[face];
+    for (var i = 0; i < list.length; i++) {
+      var idx = list[i].cells.indexOf(cellId);
+      if (idx >= 0) list[i].cells.splice(idx, 1);
+    }
+  }
+
+  function paint(cellId) {
+    var isl = S.sel ? islandById(S.face, S.sel) : null;
+    if (!isl) isl = addIsland(S.face);
+    detach(S.face, cellId);
+    isl.cells.push(cellId);
+    invalidate(S.face);
+  }
+
+  function erase(cellId) {
+    detach(S.face, cellId);
+    invalidate(S.face);
+  }
+
+  function paintRow(cellId) {
+    var ref = findCell(cellId);
+    if (!ref) return;
+    var tol = Math.max(2, S.doc.params.pitch * 0.45);
+    for (var i = 0; i < S.doc.cells.length; i++) {
+      var c = S.doc.cells[i];
+      if (Math.abs(c.y - ref.y) <= tol) paint(c.id);
+    }
+  }
+
+  function invalidate(face) {
+    S.sheets[face] = null;
+    S.dirty = true;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* animation                                                           */
+  /*
+   * An edit does not just swap one outline for another: the straps that
+   * reach the touched cell appear, and when a cell goes they retract. Both
+   * are found by diffing the island's primitive list before and after the
+   * edit - the same list the geometry is built from - so what is drawn is
+   * exactly what changed, and a strap that merely moved a hair is not
+   * animated.
+   */
+  /* ------------------------------------------------------------------ */
+
+  /* the sheet's place on the paper; adding a cell at the end of a row moves
+     every coordinate on the sheet, and an animation across that jump would
+     be a lie */
+  function frameSig() {
+    var f = G.frameOf(S.doc);
+    return f.ox + ',' + f.oy + ',' + f.W + ',' + f.H;
+  }
+
+  function islandPts(face, isl) {
+    var f = S.frame || (S.frame = G.frameOf(S.doc));
+    var pts = [];
+    for (var i = 0; i < isl.cells.length; i++) {
+      var c = findCell(isl.cells[i]);
+      if (c) pts.push(G.cellOnFace(S.doc, f, face, c));
+    }
+    return pts;
+  }
+
+  function primKey(q) {
+    var a = q.x1.toFixed(2) + ',' + q.y1.toFixed(2);
+    var b = q.x2.toFixed(2) + ',' + q.y2.toFixed(2);
+    return (q.inv ? 's' : 'p') + (a < b ? a + '|' + b : b + '|' + a);
+  }
+
+  function snapPrims(faces) {
+    var out = {};
+    for (var i = 0; i < faces.length; i++) {
+      var face = faces[i];
+      var m = {};
+      (S.doc.islands[face] || []).forEach(function (isl) {
+        var pts = islandPts(face, isl);
+        m[isl.id] = { pts: pts, prims: pts.length ? G.islandPrimitives(pts, S.doc.params) : [] };
+      });
+      out[face] = m;
+    }
+    return out;
+  }
+
+  function pushAnim(item) {
+    if (REDUCED || !item) return;
+    S.anim.push(item);
+    if (S.anim.length > 420) S.anim.splice(0, S.anim.length - 420);
+  }
+
+  function animFromDiff(before, f0) {
+    if (!before || REDUCED) return;
+    /* a new cell at the end of a row grows the sheet, which moves every
+       coordinate on it; an animation across that jump would be a lie */
+    if (f0 !== frameSig()) return;
+    var now = performance.now();
+    var anchor = S.animAnchor;
+    var faces = Object.keys(before);
+    for (var i = 0; i < faces.length; i++) {
+      var face = faces[i];
+      (S.doc.islands[face] || []).forEach(function (isl) {
+        var oldList = before[face][isl.id] ? before[face][isl.id].prims : [];
+        var pts = islandPts(face, isl);
+        var newList = pts.length ? G.islandPrimitives(pts, S.doc.params) : [];
+        var oldMap = new Map(), newMap = new Map(), i;
+        for (i = 0; i < oldList.length; i++) oldMap.set(primKey(oldList[i]), oldList[i]);
+        for (i = 0; i < newList.length; i++) newMap.set(primKey(newList[i]), newList[i]);
+        newMap.forEach(function (q, key) {
+          if (!oldMap.has(key)) pushAnim(makeItem(face, q, isl.color, true, now, anchor));
+        });
+        oldMap.forEach(function (q, key) {
+          if (!newMap.has(key)) pushAnim(makeItem(face, q, isl.color, false, now, anchor));
+        });
+      });
+    }
+  }
+
+  function makeItem(face, q, color, grow, now, anchor) {
+    var item = {
+      kind: q.inv ? 'strap' : 'pad',
+      face: face, color: color,
+      x1: q.x1, y1: q.y1, x2: q.x2, y2: q.y2, r: q.r,
+      grow: grow, t0: now, delay: 0,
+      dur: grow ? ANIM_GROW : ANIM_SHRINK,
+      fx: q.x1, fy: q.y1, ox: q.x2, oy: q.y2
+    };
+    var fx = q.x1, fy = q.y1, ox = q.x2, oy = q.y2;
+    var mid = { x: (fx + ox) / 2, y: (fy + oy) / 2 };
+    if (anchor) {
+      /* start (or finish) at the end nearest the cell that was touched */
+      var da = Math.hypot(fx - anchor.x, fy - anchor.y);
+      var db = Math.hypot(ox - anchor.x, oy - anchor.y);
+      if (db < da) { item.fx = ox; item.fy = oy; item.ox = fx; item.oy = fy; }
+      var d = Math.hypot(mid.x - anchor.x, mid.y - anchor.y);
+      item.delay = Math.min(130, d * 0.8);
+    }
+    return item;
+  }
+
+  function drawAnim(now) {
+    if (!S.anim.length) return;
+    var face = S.face;
+    var keep = [];
+    for (var i = 0; i < S.anim.length; i++) {
+      var a = S.anim[i];
+      var start = a.t0 + a.delay;
+      if (now >= start + a.dur) continue;
+      keep.push(a);
+      if (a.face !== face) continue;
+      var t = (now - start) / a.dur;
+      if (t < 0) t = 0;
+      var e = 1 - Math.pow(1 - t, 3);
+      ctx.save();
+      if (a.kind === 'strap') {
+        if (a.grow) {
+          /* a pen line running from the cell you touched to its neighbour,
+             with the tip showing where the drawing has got to */
+          var w = Math.max(0.9, a.r * 0.42);
+          var ex = a.fx + (a.ox - a.fx) * e, ey = a.fy + (a.oy - a.fy) * e;
+          ctx.globalAlpha = 1 - 0.45 * e;
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = w;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(a.fx, a.fy);
+          ctx.lineTo(ex, ey);
+          ctx.stroke();
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(ex, ey, w * 0.75, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          /* a connection being taken away thins out and fades where it was:
+             no stub left behind in the middle of a pad */
+          ctx.globalAlpha = 0.8 * (1 - e);
+          ctx.strokeStyle = '#ff9d6b';
+          ctx.lineWidth = Math.max(0.7, a.r * 0.2) * (1 - 0.4 * e);
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(a.fx, a.fy);
+          ctx.lineTo(a.ox, a.oy);
+          ctx.stroke();
+        }
+      } else if (a.kind === 'pad') {
+        var r = a.grow ? a.r * (0.28 + 0.72 * e) : a.r * (1 - 0.72 * e);
+        ctx.globalAlpha = a.grow ? (0.9 - 0.45 * e) : (0.8 * (1 - e));
+        ctx.strokeStyle = a.grow ? '#ffffff' : '#ff9d6b';
+        ctx.lineWidth = Math.max(0.8, 1.5 - e);
+        ctx.beginPath();
+        ctx.arc(a.x1, a.y1, r, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (a.kind === 'cell') {
+        var rr = a.r * (1 - e);
+        if (rr > 0.1) {
+          ctx.globalAlpha = 0.8 * (1 - e);
+          ctx.strokeStyle = '#ff9d6b';
+          ctx.lineWidth = Math.max(0.7, rr * 0.09);
+          ctx.beginPath();
+          ctx.arc(a.x1, a.y1, rr, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.fillStyle = '#ff9d6b';
+          ctx.font = (rr * 0.95) + 'px "Segoe UI", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(a.pol || '-', a.x1, a.y1 + rr * 0.04);
+        }
+      } else if (a.kind === 'flip') {
+        ctx.globalAlpha = 0.75 * (1 - e);
+        ctx.strokeStyle = '#9ee6ff';
+        ctx.lineWidth = Math.max(0.7, a.r * 0.07);
+        ctx.beginPath();
+        ctx.arc(a.x1, a.y1, a.r * (0.55 + 0.75 * e), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    S.anim = keep;
+  }
+
+  /* single place where an edit ends: rebuild, animate what changed, tell the
+     user something happened */
+  function finishEdit(before, f0, msg) {
+    if (f0 !== undefined && f0 !== null && f0 !== frameSig()) S.anim = [];
+    renderPalette();
+    rebuildAll();
+    animFromDiff(before, f0);
+    S.animAnchor = null;
+    S.dirty = true;
+    if (msg) toast(msg);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* undo, delete, rotate                                                */
+  /* ------------------------------------------------------------------ */
+
+  /* Removing a cell cannot be painted back, so keep a small snapshot stack.
+     Forty steps is far more than anyone needs and costs nothing. */
+  var HISTORY = [];
+  function snapshot() {
+    try {
+      HISTORY.push(JSON.stringify(S.doc));
+      if (HISTORY.length > 40) HISTORY.shift();
+    } catch (e) { }
+  }
+
+  function undo() {
+    if (!HISTORY.length) { toast('Nothing to undo'); return; }
+    var txt = HISTORY.pop();
+    try {
+      adoptDoc(JSON.parse(txt));
+      toast('Undone');
+    } catch (e) {
+      toast('Could not undo');
+    }
+  }
+
+  /* take a cell out of the pack completely - both faces and every island.
+     A batch passes a stagger so a group pops away in order rather than all
+     at once, which would read as a single flash and hide what went. */
+  function deleteCell(id, delay) {
+    var idx = -1;
+    for (var i = 0; i < S.doc.cells.length; i++) if (S.doc.cells[i].id === id) { idx = i; break; }
+    if (idx < 0) return false;
+    var cell = S.doc.cells[idx];
+    var fr = S.frame || (S.frame = G.frameOf(S.doc));
+    var at = G.cellOnFace(S.doc, fr, S.face, cell);
+    S.animAnchor = at;
+    pushAnim({
+      kind: 'cell', face: S.face, x1: at.x, y1: at.y, r: S.doc.params.cellD / 2,
+      pol: G.polarityOnFace(cell, S.face), t0: performance.now(), delay: delay || 0,
+      dur: ANIM_SHRINK, grow: false
+    });
+    S.doc.cells.splice(idx, 1);
+    ['top', 'bottom'].forEach(function (f) {
+      (S.doc.islands[f] || []).forEach(function (isl) {
+        var k = isl.cells.indexOf(id);
+        while (k >= 0) { isl.cells.splice(k, 1); k = isl.cells.indexOf(id); }
+      });
+    });
+    if (S.hover && S.hover.id === id) S.hover = null;
+    invalidate('top');
+    invalidate('bottom');
+    return true;
+  }
+
+  function rotateLayout(clockwise) {
+    if (!S.doc.cells.length) { toast('No cells to rotate'); return; }
+    snapshot();
+    G.rotateDoc(S.doc, clockwise);
+    S.anim = [];          /* half-played straps would be drawn in the old place */
+    invalidate('top');
+    invalidate('bottom');
+    fitView();
+    rebuildAll();
+    toast('Turned ' + (clockwise ? 'clockwise' : 'anticlockwise') + ' - sheet is now ' +
+          S.frame.W.toFixed(0) + ' x ' + S.frame.H.toFixed(0) + ' mm');
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* build                                                               */
+  /* ------------------------------------------------------------------ */
+
+  /* Distance between two islands on the same face. Straps never reach
+     outside the bounding box of their own cells, so the worst case is
+     always cell centre distance minus the widest radius used. */
+  function gapCheck(face) {
+    var out = [];
+    var list = S.doc.islands[face] || [];
+    if (list.length < 2) return out;
+    var p = S.doc.params;
+    var r = Math.max(p.padD, p.bridgeW) / 2;
+    var warnAt = Math.max(0.5, p.kerf * 3);
+    var errAt = p.kerf + 0.1;
+    var f = S.frame || (S.frame = G.frameOf(S.doc));
+    var pos = new Map();
+    for (var i = 0; i < S.doc.cells.length; i++) {
+      pos.set(S.doc.cells[i].id, G.cellOnFace(S.doc, f, face, S.doc.cells[i]));
+    }
+    var pts = [];
+    for (var j = 0; j < list.length; j++) {
+      var arr = [];
+      for (var k = 0; k < list[j].cells.length; k++) {
+        var q = pos.get(list[j].cells[k]);
+        if (q) arr.push(q);
+      }
+      pts.push(arr);
+    }
+    for (var a = 0; a < list.length; a++) {
+      for (var b = a + 1; b < list.length; b++) {
+        var best = Infinity;
+        for (var u = 0; u < pts[a].length; u++) {
+          for (var v = 0; v < pts[b].length; v++) {
+            var dx = pts[a][u].x - pts[b][v].x, dy = pts[a][u].y - pts[b][v].y;
+            var d = dx * dx + dy * dy;
+            if (d < best) best = d;
+          }
+        }
+        if (!isFinite(best)) continue;
+        var gap = Math.sqrt(best) - 2 * r;
+        if (gap < warnAt) {
+          out.push({
+            level: gap < errAt ? 'error' : 'warn',
+            text: (face === 'top' ? 'Top' : 'Bottom') + ': ' + list[a].name + ' and ' + list[b].name +
+                  ' are ' + gap.toFixed(2) + ' mm apart' +
+                  (gap < errAt ? ' - they will cut into each other.' : ' - only a thin web will be left.')
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /* An island is supposed to be one piece you can pick up. Removing cells can
+     cut a group in half, which leaves one island drawn as two separate
+     outlines - it would come off the cutter as two parts. Catch that. */
+  function partsCheck(face) {
+    var out = [];
+    var sh = S.sheets[face];
+    if (!sh) return out;
+    for (var i = 0; i < sh.islands.length; i++) {
+      var isl = sh.islands[i];
+      if (isl.parts > 1) {
+        out.push({
+          level: 'error',
+          face: face,
+          text: (face === 'top' ? 'Top' : 'Bottom') + ': ' + isl.name + ' is ' + isl.parts +
+                ' separate pieces - it will fall apart when cut.'
+        });
+      }
+    }
+    return out;
+  }
+
+  function ensureSheet(face) {
+    if (S.sheets[face]) return S.sheets[face];
+    var t0 = performance.now();
+    if (!S.frame) S.frame = G.frameOf(S.doc);
+    var sh = G.buildSheet(S.doc, face, { cache: S.cache[face], frame: S.frame });
+    S.sheets[face] = sh;
+    if (face === S.face) S.buildMs = Math.round(performance.now() - t0);
+    return sh;
+  }
+
+  function rebuildAll() {
+    S.sheets.top = null;
+    S.sheets.bottom = null;
+    S.frame = G.frameOf(S.doc);
+    ensureSheet('top');
+    ensureSheet('bottom');
+    S.drc = G.diagnose(S.doc)
+      .concat(gapCheck('top'), gapCheck('bottom'), partsCheck('top'), partsCheck('bottom'));
+    /* a full rebuild is exactly what "the sheet already matches these slider
+       values" means, so the promise is renewed here rather than by whoever
+       happened to change a number: the cut style changes two widths without
+       going through a slider at all */
+    SLIDE.settled = geomValues();
+    updatePanels();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* rendering                                                           */
+  /* ------------------------------------------------------------------ */
+
+  function resize() {
+    var r = cv.parentElement.getBoundingClientRect();
+    var dpr = window.devicePixelRatio || 1;
+    S.vw = Math.max(1, r.width);
+    S.vh = Math.max(1, r.height);
+    cv.width = Math.round(S.vw * dpr);
+    cv.height = Math.round(S.vh * dpr);
+    cv.style.width = S.vw + 'px';
+    cv.style.height = S.vh + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    S.dirty = true;
+  }
+
+  function fitView() {
+    S.frame = G.frameOf(S.doc);
+    var f = S.frame;
+    S.zoom = Math.min(S.vw / (f.W + 24), S.vh / (f.H + 24));
+    S.px = (S.vw - f.W * S.zoom) / 2;
+    S.py = (S.vh - f.H * S.zoom) / 2;
+    S.dirty = true;
+  }
+
+  function toSheet(ev) {
+    var r = cv.getBoundingClientRect();
+    return {
+      x: (ev.clientX - r.left - S.px) / S.zoom,
+      y: (ev.clientY - r.top - S.py) / S.zoom
+    };
+  }
+
+  function cellAt(pt) {
+    var f = S.frame;
+    var best = null, bd = Infinity;
+    var r2 = Math.pow(S.doc.params.cellD / 2, 2);
+    for (var i = 0; i < S.doc.cells.length; i++) {
+      var c = S.doc.cells[i];
+      var p = G.cellOnFace(S.doc, f, S.face, c);
+      var dx = p.x - pt.x, dy = p.y - pt.y;
+      var d = dx * dx + dy * dy;
+      if (d <= r2 && d < bd) { bd = d; best = c; }
+    }
+    return best;
+  }
+
+  function draw(nowOverride) {
+    S.dirty = false;
+    var f = S.frame || (S.frame = G.frameOf(S.doc));
+    var zoom = S.zoom;
+    ctx.fillStyle = '#101318';
+    ctx.fillRect(0, 0, S.vw, S.vh);
+
+    ctx.save();
+    ctx.translate(S.px, S.py);
+    ctx.scale(zoom, zoom);
+
+    /* sheet plate */
+    ctx.fillStyle = '#181d24';
+    ctx.fillRect(0, 0, f.W, f.H);
+    ctx.strokeStyle = '#3a4451';
+    ctx.lineWidth = 1 / zoom;
+    ctx.strokeRect(0, 0, f.W, f.H);
+
+    /* 10 mm grid */
+    ctx.strokeStyle = '#ffffff0c';
+    ctx.lineWidth = 1 / zoom;
+    ctx.beginPath();
+    for (var gx = 0; gx <= f.W; gx += 10) { ctx.moveTo(gx, 0); ctx.lineTo(gx, f.H); }
+    for (var gy = 0; gy <= f.H; gy += 10) { ctx.moveTo(0, gy); ctx.lineTo(f.W, gy); }
+    ctx.stroke();
+
+    /* the row under the pointer in the Rows list, so a row number means
+       something on the sheet */
+    if (S.hiRow !== null) {
+      var band = Math.max(4, S.doc.params.pitch * 0.5);
+      var y0b = S.hiRow + f.oy - band / 2;
+      ctx.fillStyle = '#ffffff12';
+      ctx.fillRect(0, y0b, f.W, band);
+      ctx.strokeStyle = '#ffffff28';
+      ctx.lineWidth = 1 / zoom;
+      ctx.beginPath();
+      ctx.moveTo(0, y0b); ctx.lineTo(f.W, y0b);
+      ctx.moveTo(0, y0b + band); ctx.lineTo(f.W, y0b + band);
+      ctx.stroke();
+    }
+
+    var sheet = S.sheets[S.face];
+
+    /* the far sheet: its body lies under the near metal, its edges are drawn
+       over it, so a plate you are not editing still reads at a glance */
+    if (S.ghost) ghostFill();
+
+    if (sheet) {
+      for (var i = 0; i < sheet.islands.length; i++) {
+        var fill = sheet.islands[i];
+        ctx.fillStyle = hexA(fill.color, (S.sel && fill.id === S.sel) ? 0.42 : 0.22);
+        ctx.fill(islandPath(fill), 'evenodd');
+      }
+    }
+
+    if (S.ghost) ghostLines();
+
+    if (sheet) {
+      for (i = 0; i < sheet.islands.length; i++) {
+        var isl = sheet.islands[i];
+        var src = islandById(S.face, isl.id);
+        ctx.strokeStyle = isl.color;
+        ctx.lineWidth = (S.sel && isl.id === S.sel ? 2.2 : 1.4) / zoom;
+        ctx.stroke(islandPath(isl));
+        if (src && S.dragging && isl.id === S.sel) drawPrims(src);
+      }
+    }
+
+    /* cells */
+    var r = S.doc.params.cellD / 2;
+    var anyPick = S.pick.size > 0;
+    for (var c = 0; c < S.doc.cells.length; c++) {
+      var cell = S.doc.cells[c];
+      var pos = G.cellOnFace(S.doc, f, S.face, cell);
+      var pol = G.polarityOnFace(cell, S.face);
+      var isPick = anyPick && S.pick.has(cell.id);
+      var isHot = !isPick && S.hover && S.hover.id === cell.id;
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
+      if (isPick) {
+        ctx.fillStyle = 'rgba(239,107,107,0.17)';
+        ctx.fill();
+      } else if (isHot && S.tool === 'delete') {
+        ctx.fillStyle = 'rgba(239,107,107,0.06)';
+        ctx.fill();
+      }
+      ctx.strokeStyle = isPick ? '#ff6f6f' : (isHot ? '#ffffff' : '#5b6675');
+      ctx.lineWidth = (isPick ? 2.2 : isHot ? 1.6 : 1) / zoom;
+      ctx.stroke();
+
+      /* a picked cell wears a dashed halo, so "about to be removed" cannot be
+         mistaken for an island colour */
+      if (isPick) {
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, r + 2.4 / zoom, 0, Math.PI * 2);
+        ctx.setLineDash([2.4 / zoom, 2 / zoom]);
+        ctx.lineWidth = 1.3 / zoom;
+        ctx.strokeStyle = '#ff6f6f';
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      ctx.fillStyle = pol === '+' ? '#e2837f' : '#7fb2e2';
+      ctx.font = (r * 0.95) + 'px "Segoe UI", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(pol, pos.x, pos.y + r * 0.04);
+      if (r >= 9) {
+        ctx.fillStyle = '#77828f';
+        ctx.font = (r * 0.42) + 'px "Segoe UI", sans-serif';
+        ctx.fillText(String(c + 1), pos.x, pos.y + r * 0.62);
+      }
+    }
+
+    /* the guide slits last, over the cell they mark */
+    if (sheet) drawSlits(sheet);
+
+    /* the box being dragged out, over the cells it has already picked */
+    if (S.marquee && S.marquee.moved) {
+      var mm = S.marquee;
+      var bx = Math.min(mm.x0, mm.x1), by = Math.min(mm.y0, mm.y1);
+      var bw = Math.abs(mm.x1 - mm.x0), bh = Math.abs(mm.y1 - mm.y0);
+      ctx.fillStyle = 'rgba(239,107,107,0.09)';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = '#ff6f6f';
+      ctx.lineWidth = 1.2 / zoom;
+      ctx.setLineDash([4 / zoom, 3 / zoom]);
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.setLineDash([]);
+    }
+
+    /* animation last, so a growing strap is drawn over the metal it becomes */
+    if (S.anim.length) drawAnim(nowOverride === undefined ? performance.now() : nowOverride);
+
+    ctx.restore();
+
+    /* face label */
+    ctx.fillStyle = '#77828f';
+    ctx.font = '600 11px "Segoe UI", sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    ctx.fillText((S.face === 'top' ? 'TOP SHEET' : 'BOTTOM SHEET (mirrored)') + '  -  ' +
+                 f.W.toFixed(1) + ' x ' + f.H.toFixed(1) + ' mm', S.vw - 12, 10);
+    if (S.ghost && S.sheets[otherFace()] && S.sheets[otherFace()].islands.length) {
+      ctx.fillStyle = '#8fb6d6';
+      ctx.font = '600 10px "Segoe UI", sans-serif';
+      ctx.fillText('dashed = ' + otherFace() + ' sheet, seen through', S.vw - 12, 25);
+    }
+  }
+
+  /* the far sheet, drawn mirrored back into this sheet's coordinates so it
+     lands where the metal really is: the body under the near metal, the edges
+     over it. Each far piece keeps its own colour, so the two faces are told
+     apart by the dash, not by a second palette. */
+  function ghostFrame(fn) {
+    /* no build on this path: the toggle builds both sheets, every full rebuild
+       builds both, and a preview that moved the frame drops the ghost instead
+       of drawing it in coordinates that no longer hold */
+    var sh = S.sheets[otherFace()];
+    if (!sh || !sh.islands.length) return;
+    ctx.save();
+    ctx.translate(S.frame.W, 0);
+    ctx.scale(-1, 1);
+    for (var i = 0; i < sh.islands.length; i++) fn(sh.islands[i]);
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  function ghostFill() {
+    ghostFrame(function (isl) {
+      ctx.fillStyle = hexA(isl.color, 0.18);
+      ctx.fill(islandPath(isl), 'evenodd');
+    });
+  }
+
+  function ghostLines() {
+    ghostFrame(function (piece) {
+      ctx.strokeStyle = hexA(piece.color, 0.95);
+      ctx.lineWidth = 1.5 / S.zoom;
+      ctx.setLineDash([6 / S.zoom, 4.5 / S.zoom]);
+      ctx.stroke(islandPath(piece));
+    });
+  }
+
+  function islandPath(isl) {
+    var path = new Path2D();
+    addLoops(path, isl.polys);
+    if (isl.slots) addLoops(path, isl.slots);
+    return path;
+  }
+
+  function addLoops(path, list) {
+    for (var p = 0; p < list.length; p++) {
+      var poly = list[p];
+      if (poly.length < 3) continue;
+      path.moveTo(poly[0].x, poly[0].y);
+      for (var k = 1; k < poly.length; k++) path.lineTo(poly[k].x, poly[k].y);
+      path.closePath();
+    }
+  }
+
+  /* The guide slits are cut through the plate, so they are drawn as openings
+     and drawn last: a dark slot with a lit edge, over the cell it belongs to,
+     which is the mark the electrode will actually line up on. */
+  function drawSlits(sheet) {
+    for (var i = 0; i < sheet.islands.length; i++) {
+      var isl = sheet.islands[i];
+      if (!isl.slots || !isl.slots.length) continue;
+      var path = new Path2D();
+      addLoops(path, isl.slots);
+      ctx.fillStyle = '#0a0d12';
+      ctx.fill(path, 'evenodd');
+      ctx.strokeStyle = hexA(isl.color, 0.32);
+      ctx.lineWidth = 0.8 / S.zoom;
+      ctx.stroke(path);
+    }
+  }
+
+  function drawPrims(src) {
+    var f = S.frame;
+    var pts = [];
+    for (var i = 0; i < src.cells.length; i++) {
+      var c = findCell(src.cells[i]);
+      if (c) pts.push(G.cellOnFace(S.doc, f, S.face, c));
+    }
+    if (!pts.length) return;
+    var prims = G.islandPrimitives(pts, S.doc.params);
+    ctx.fillStyle = hexA(src.color, 0.35);
+    ctx.strokeStyle = hexA(src.color, 0.9);
+    ctx.lineWidth = 1 / S.zoom;
+    for (var k = 0; k < prims.length; k++) {
+      var q = prims[k];
+      ctx.beginPath();
+      ctx.moveTo(q.x1, q.y1);
+      ctx.lineTo(q.x2, q.y2);
+      ctx.lineCap = 'round';
+      ctx.lineWidth = q.r * 2;
+      ctx.strokeStyle = hexA(src.color, 0.3);
+      ctx.stroke();
+    }
+  }
+
+  function hexA(hex, a) {
+    var h = hex.replace('#', '');
+    var n = parseInt(h, 16);
+    return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* panels                                                              */
+  /* ------------------------------------------------------------------ */
+
+  function updatePanels() {
+    /* picks can outlive the cells they point at - fill grid, empty, undo, a
+       loaded file - so the bar is rebuilt from cells that actually exist */
+    if (S.pick.size) {
+      var live = new Set();
+      for (var lp = 0; lp < S.doc.cells.length; lp++) live.add(S.doc.cells[lp].id);
+      S.pick.forEach(function (id) { if (!live.has(id)) S.pick.delete(id); });
+    }
+    selBar();
+    var f = S.frame || G.frameOf(S.doc);
+    $('sSize').textContent = f.W.toFixed(1) + ' x ' + f.H.toFixed(1) + ' mm';
+    $('sCells').textContent = S.doc.cells.length;
+    var plus = 0;
+    for (var q = 0; q < S.doc.cells.length; q++) if (!S.doc.cells[q].flip) plus++;
+    $('sPol').textContent = plus + ' + / ' + (S.doc.cells.length - plus) + ' \u2212';
+    var faceIslands = S.doc.islands[S.face];
+    $('sIslands').textContent = faceIslands.length;
+    var area = 0;
+    ['top', 'bottom'].forEach(function (fc) {
+      var sh = S.sheets[fc];
+      if (sh) sh.islands.forEach(function (i) { area += i.area; });
+    });
+    $('sArea').textContent = (area / 100).toFixed(1) + ' cm2';
+    $('sTime').textContent = S.buildMs + ' ms';
+
+    var ul = $('islands');
+    ul.innerHTML = '';
+    faceIslands.forEach(function (isl) {
+      var li = document.createElement('li');
+      li.innerHTML = '<span class="sw" style="background:' + isl.color + '"></span>' +
+                     '<span class="nm">' + esc(isl.name) + '</span>' +
+                     '<span class="ct">' + isl.cells.length + '</span>' +
+                     '<span class="x" title="delete">&times;</span>';
+      li.onclick = function (ev) {
+        if (ev.target.classList.contains('x')) {
+          snapshot();
+          S.doc.islands[S.face] = S.doc.islands[S.face].filter(function (x) { return x.id !== isl.id; });
+          if (S.sel === isl.id) S.sel = null;
+          invalidate(S.face);
+          rebuildAll();
+        } else {
+          S.sel = isl.id;
+          renderPalette();
+          S.dirty = true;
+        }
+      };
+      ul.appendChild(li);
+    });
+
+    var checks = $('checks');
+    checks.innerHTML = '';
+    var errs = S.drc.filter(function (d) { return d.level === 'error'; });
+    var warns = S.drc.filter(function (d) { return d.level === 'warn'; });
+    if (!S.drc.length) {
+      checks.innerHTML = '<li class="check"><span class="dot" style="background:#7bd88f"></span><span class="ok">Every cell connected on both faces.</span></li>';
+    }
+    S.drc.slice(0, 14).forEach(function (d) {
+      var li = document.createElement('li');
+      li.className = 'check';
+      li.innerHTML = '<span class="dot" style="background:' + (d.level === 'error' ? '#ef6b6b' : '#ffb74d') + '"></span>' +
+                     '<span class="' + (d.level === 'error' ? 'bad' : 'warn') + '">' + esc(d.text) + '</span>';
+      checks.appendChild(li);
+    });
+    if (!errs.length && warns.length) {
+      var li2 = document.createElement('li');
+      li2.className = 'note';
+      li2.textContent = warns.length + ' warning(s) - the sheets still export.';
+      checks.appendChild(li2);
+    }
+    renderRows();
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function renderPalette() {
+    var p = $('palette');
+    p.innerHTML = '';
+    S.doc.islands[S.face].forEach(function (isl) {
+      var b = document.createElement('div');
+      b.className = 'chip' + (S.sel === isl.id ? ' on' : '');
+      b.style.background = isl.color;
+      b.title = isl.name + ' - ' + isl.cells.length + ' cells';
+      b.innerHTML = '<span class="n">' + isl.cells.length + '</span>';
+      b.onclick = function () { S.sel = isl.id; renderPalette(); S.dirty = true; };
+      p.appendChild(b);
+    });
+    var add = document.createElement('div');
+    add.className = 'chip';
+    add.style.background = '#2a3038';
+    add.style.color = '#9aa7b6';
+    add.textContent = '+';
+    add.title = 'new island';
+    add.onclick = function () { snapshot(); addIsland(S.face); renderPalette(); rebuildAll(); };
+    p.appendChild(add);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* export                                                              */
+  /* ------------------------------------------------------------------ */
+
+  function download(name, text, mime) {
+    var blob = new Blob([text], { type: (mime || 'text/plain') + ';charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1500);
+  }
+
+  function baseName() {
+    return (S.doc.name || 'pack').replace(/[^\w\-]+/g, '_');
+  }
+
+  function exportSheets(kind, which) {
+    rebuildAll();
+    var sheets = which === 'top' ? [S.sheets.top] : which === 'bottom' ? [S.sheets.bottom] : [S.sheets.top, S.sheets.bottom];
+    if (kind === 'svg') {
+      download(baseName() + (which === 'both' ? '' : '-' + which) + '.svg', G.toSVG(sheets), 'image/svg+xml');
+    } else {
+      download(baseName() + (which === 'both' ? '' : '-' + which) + '.dxf', G.toDXF(sheets), 'application/dxf');
+    }
+    toast(kind.toUpperCase() + ' written - ' + sheets.length + ' sheet(s)');
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* toast                                                               */
+  /* ------------------------------------------------------------------ */
+
+  var toastTimer = null;
+  function toast(msg) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2200);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* input                                                               */
+  /* ------------------------------------------------------------------ */
+
+  function setFace(face) {
+    S.face = face;
+    $('btnTop').classList.toggle('on', face === 'top');
+    $('btnBottom').classList.toggle('on', face === 'bottom');
+    var list = S.doc.islands[face];
+    S.sel = list.length ? list[0].id : null;
+    renderPalette();
+    rebuildAll();
+    S.dirty = true;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* seeing the other sheet through                                      */
+  /*
+   * The two sheets are cut separately and welded on opposite ends of the same
+   * cells, so the one thing you cannot see while you work on one of them is
+   * the other: which cells the far strip already holds, whether the strips
+   * alternate or sit directly on top of each other, and whether the far plate
+   * reaches a cell you have just left out of this one.
+   *
+   * The far sheet is built in print coordinates - mirrored in x, because it is
+   * cut flat and flipped over - so the mirror is undone when it is drawn: the
+   * ghost sits exactly where that metal will lie in the pack, not where it
+   * prints. That is the whole difference between a useful overlay and a
+   * mirrored one, and it is the reason this reads the built sheet rather than
+   * the island list.
+   *
+   * It is a view option. It is not in the document, not in the exports and not
+   * in the undo stack, and it costs nothing while it is off.
+   */
+  /* ------------------------------------------------------------------ */
+
+  function otherFace() { return S.face === 'top' ? 'bottom' : 'top'; }
+
+  function setGhost(on) {
+    S.ghost = !!on;
+    $('ghostOther').checked = S.ghost;
+    if (S.ghost) {
+      ensureSheet(S.face);
+      ensureSheet(otherFace());
+    }
+    S.dirty = true;
+    if (!S.ghost) { toast('Only the ' + S.face + ' sheet drawn'); return; }
+    var n = (S.doc.islands[otherFace()] || []).length;
+    if (!n) { toast('Nothing on the ' + otherFace() + ' sheet to show through'); return; }
+    toast((otherFace() === 'top' ? 'Top' : 'Bottom') + ' sheet seen through - ' +
+          n + (n === 1 ? ' piece' : ' pieces') + ', dashed');
+  }
+
+  function polCounts() {
+    var plus = 0;
+    for (var i = 0; i < S.doc.cells.length; i++) if (!S.doc.cells[i].flip) plus++;
+    return plus + ' plus-up, ' + (S.doc.cells.length - plus) + ' minus-up';
+  }
+
+  /* turning a cell over changes no geometry at all - only which side its
+     terminal faces - so it only has to redraw */
+  function flipCell(c) {
+    c.flip = !c.flip;
+    var fr = S.frame || (S.frame = G.frameOf(S.doc));
+    var at = G.cellOnFace(S.doc, fr, S.face, c);
+    pushAnim({
+      kind: 'flip', face: S.face, x1: at.x, y1: at.y, r: S.doc.params.cellD / 2,
+      t0: performance.now(), delay: 0, dur: 320, grow: true
+    });
+    S.dirty = true;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* picking the cells to remove                                         */
+  /*
+   * A click that deletes is a click you cannot look at before it happens,
+   * and a group of cells - a vent, a BMS window, a corner to clear - cannot
+   * be taken out in one go. So Remove picks: the cells are ringed in red and
+   * stay in the pack until Remove or Del confirms, one undo step for the lot.
+   * Dragging on the bare sheet draws a box and picks everything it covers,
+   * showing the count as it grows.
+   */
+  /* ------------------------------------------------------------------ */
+
+  /* the little bar is the only place that says how many cells are picked, so
+     every path that touches the set goes through here */
+  function selBar() {
+    var n = S.pick.size;
+    var bar = $('selBar');
+    if (n > 0) $('selCount').textContent = n;
+    bar.classList.toggle('show', S.tool === 'delete' && n > 0);
+  }
+
+  function pickCell(id, add) {
+    if (add || !S.pick.has(id)) S.pick.add(id);
+    else S.pick.delete(id);
+    selBar();
+    S.dirty = true;
+  }
+
+  function unpick() {
+    if (!S.pick.size && !S.marquee) return;
+    S.pick.clear();
+    S.marquee = null;
+    selBar();
+    S.dirty = true;
+  }
+
+  /* the cells whose centre falls inside the rubber band */
+  function marqueeCells(m) {
+    var f = S.frame || (S.frame = G.frameOf(S.doc));
+    var x0 = Math.min(m.x0, m.x1), x1 = Math.max(m.x0, m.x1);
+    var y0 = Math.min(m.y0, m.y1), y1 = Math.max(m.y0, m.y1);
+    var out = [];
+    for (var i = 0; i < S.doc.cells.length; i++) {
+      var p = G.cellOnFace(S.doc, f, S.face, S.doc.cells[i]);
+      if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) out.push(S.doc.cells[i].id);
+    }
+    return out;
+  }
+
+  /* one snapshot, one rebuild: a picked group leaves the pack as a unit and
+     comes back with a single Ctrl+Z */
+  function removePicked() {
+    var ids = [];
+    S.pick.forEach(function (id) { ids.push(id); });
+    if (!ids.length) return;
+    var f = S.frame || (S.frame = G.frameOf(S.doc));
+    var cx = 0, cy = 0;
+    for (var q = 0; q < ids.length; q++) {
+      var cell = findCell(ids[q]);
+      if (cell) { var at = G.cellOnFace(S.doc, f, S.face, cell); cx += at.x; cy += at.y; }
+    }
+    var before = REDUCED ? null : snapPrims(['top', 'bottom']);
+    var f0 = frameSig();
+    snapshot();
+    var gone = 0;
+    for (var i = 0; i < ids.length; i++) {
+      if (deleteCell(ids[i], Math.min(180, i * 30))) gone++;
+    }
+    S.pick.clear();
+    selBar();
+    if (!gone) return;
+    /* the straps of a group retract outward from its middle, not from
+       whichever cell happened to be deleted last */
+    if (gone > 1) S.animAnchor = { x: cx / ids.length, y: cy / ids.length };
+    finishEdit(before, f0, gone === 1
+      ? 'Cell removed - ' + S.doc.cells.length + ' left'
+      : gone + ' cells removed together - ' + S.doc.cells.length + ' left');
+  }
+
+  cv.addEventListener('pointerdown', function (ev) {
+    if (ev.button === 1 || ev.altKey) {
+      S.pan = { x: ev.clientX - S.px, y: ev.clientY - S.py };
+      try { cv.setPointerCapture(ev.pointerId); } catch (e) { }
+      return;
+    }
+    var pt = toSheet(ev);
+    var c = cellAt(pt);
+
+    /* remove picks cells; nothing leaves the pack until it is confirmed */
+    if (S.tool === 'delete') {
+      if (ev.button !== 0) return;      /* no accidental erasing in this tool */
+      if (c) { pickCell(c.id, ev.shiftKey); return; }
+      /* bare sheet: a box to drag out, a click to unpick everything */
+      S.pickBase = ev.shiftKey ? new Set(S.pick) : new Set();
+      S.marquee = { x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y, moved: false };
+      S.hover = null;
+      try { cv.setPointerCapture(ev.pointerId); } catch (e) { }
+      S.dirty = true;
+      return;
+    }
+
+    if (!c) return;
+
+    /* flip is one click, one cell, no drag */
+    if (ev.button === 0 && S.tool === 'flip') {
+      var label = cellIndex(c.id) + 1;
+      var f0 = frameSig();
+      snapshot();
+      flipCell(c);
+      finishEdit(null, f0, 'Cell ' + label + ' turned over - ' + polCounts());
+      return;
+    }
+
+    /* paint and erase are a stroke: the primitives are photographed once at
+       the top and diffed once at the bottom, so a fast drag over thirty
+       cells animates as one motion instead of thirty */
+    var eraseMode = ev.button === 2;
+    snapshot();
+    S.strokeBefore = REDUCED ? null : snapPrims(['top']);
+    S.strokeFrame = frameSig();
+    S.dragging = true;
+    S.paintMode = eraseMode ? 'erase' : (ev.shiftKey ? 'row' : 'paint');
+    S.animAnchor = G.cellOnFace(S.doc, S.frame, S.face, c);
+    try { cv.setPointerCapture(ev.pointerId); } catch (e) { }
+    applyPaint(c, S.paintMode);
+  });
+
+  function applyPaint(c, mode) {
+    if (mode === 'erase') erase(c.id);
+    else if (mode === 'row') paintRow(c.id);
+    else paint(c.id);
+    renderPalette();
+    S.dirty = true;
+  }
+
+  cv.addEventListener('pointermove', function (ev) {
+    if (S.pan) {
+      S.px = ev.clientX - S.pan.x;
+      S.py = ev.clientY - S.pan.y;
+      S.dirty = true;
+      return;
+    }
+    var pt = toSheet(ev);
+    if (S.marquee) {
+      var mq = S.marquee;
+      mq.x1 = pt.x; mq.y1 = pt.y;
+      /* three screen pixels of travel is a drag, below that it is a click */
+      if (!mq.moved && Math.hypot(mq.x1 - mq.x0, mq.y1 - mq.y0) * S.zoom > 3) mq.moved = true;
+      if (mq.moved) {
+        S.pick = new Set(S.pickBase);
+        var inside = marqueeCells(mq);
+        for (var q = 0; q < inside.length; q++) S.pick.add(inside[q]);
+        selBar();
+      }
+      S.dirty = true;
+      return;
+    }
+    var c = cellAt(pt);
+    var changed = (c ? c.id : null) !== (S.hover ? S.hover.id : null);
+    S.hover = c;
+    if (changed) S.dirty = true;
+    if (S.dragging && c && S.paintMode !== 'row') {
+      applyPaint(c, S.paintMode);
+    }
+  });
+
+  function endDrag() {
+    if (S.dragging) {
+      S.dragging = false;
+      finishEdit(S.strokeBefore, S.strokeFrame, null);
+      S.strokeBefore = null;
+      S.strokeFrame = null;
+    }
+    if (S.marquee) {
+      /* no travel means it was a click on the bare sheet: unpick, unless the
+         shift key was held to add to what was already picked */
+      if (!S.marquee.moved) {
+        S.pick = new Set(S.pickBase || []);
+        selBar();
+      }
+      S.marquee = null;
+      S.pickBase = null;
+      S.dirty = true;
+    }
+    S.pan = null;
+  }
+  cv.addEventListener('pointerup', endDrag);
+  cv.addEventListener('pointercancel', endDrag);
+  cv.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+
+  cv.addEventListener('wheel', function (ev) {
+    ev.preventDefault();
+    var r = cv.getBoundingClientRect();
+    var mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    var before = { x: (mx - S.px) / S.zoom, y: (my - S.py) / S.zoom };
+    var k = Math.exp(-ev.deltaY * 0.0015);
+    S.zoom = Math.max(0.4, Math.min(30, S.zoom * k));
+    S.px = mx - before.x * S.zoom;
+    S.py = my - before.y * S.zoom;
+    S.dirty = true;
+  }, { passive: false });
+
+  document.addEventListener('keydown', function (ev) {
+    var el = ev.target || {};
+    var tag = el.tagName;
+    var range = tag === 'INPUT' && el.type === 'range';
+    var typing = (tag === 'INPUT' && !range) || tag === 'SELECT' || tag === 'TEXTAREA';
+    /* Undo is the one shortcut that has to work straight after a slider drag:
+       the thumb still has focus, and the drag is exactly what is being undone.
+       Everything else stays out of the way while a field has the keyboard. */
+    if (!typing && (ev.ctrlKey || ev.metaKey) && (ev.key === 'z' || ev.key === 'Z')) {
+      ev.preventDefault();
+      undo();
+      return;
+    }
+    if (typing || range) return;
+    if (ev.key === 'f' || ev.key === 'F') {
+      if (S.hover) {
+        var f0f = frameSig();
+        var target = S.hover;
+        snapshot();
+        flipCell(target);
+        finishEdit(null, f0f, 'Cell ' + (cellIndex(target.id) + 1) + ' turned over - ' + polCounts());
+      }
+    } else if (ev.key === 'Delete' || ev.key === 'Backspace') {
+      /* picked cells go together; with nothing picked, the cell under the
+         pointer still works, which is how the keyboard has always felt */
+      if (S.pick.size) {
+        ev.preventDefault();
+        removePicked();
+      } else if (S.hover) {
+        ev.preventDefault();
+        var label = cellIndex(S.hover.id) + 1;
+        var f0d = frameSig();
+        var before = REDUCED ? null : snapPrims(['top', 'bottom']);
+        snapshot();
+        if (deleteCell(S.hover.id)) {
+          finishEdit(before, f0d, 'Cell ' + label + ' removed - ' + S.doc.cells.length + ' left');
+        }
+      }
+    } else if (ev.key === 'Escape') {
+      unpick();
+    } else if (ev.key === 'r' || ev.key === 'R') rotateLayout(true);
+    else if (ev.key === 't' || ev.key === 'T') setFace('top');
+    else if (ev.key === 'b' || ev.key === 'B') setFace('bottom');
+    else if (ev.key === 'x' || ev.key === 'X') setGhost(!S.ghost);
+    else if (ev.key === 'g' || ev.key === 'G') { fitView(); }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* document <> controls                                                */
+  /* ------------------------------------------------------------------ */
+
+  function syncInputs() {
+    var p = S.doc.params;
+    /* the bounds first: a slider clamps what you assign to it, so a loaded
+       file cannot leave the thumb at one number and the metal at another */
+    $('padD').max = Math.max(8, p.cellD - 0.4);
+    $('bridgeW').max = p.cellD + 6;
+    syncGuideMax();
+    $('cellD').value = p.cellD;
+    $('gap').value = p.gap;
+    refreshLineDefaults();
+    var vals = {
+      padD: p.padD, bridgeW: p.bridgeW, kerf: p.kerf, margin: p.margin,
+      step: p.step, lineAngle: p.lineAngle, guideL: p.guideL
+    };
+    allRanges().forEach(function (el) {
+      if (vals[el.id] !== undefined) el.value = vals[el.id];
+    });
+    /* a file whose slit is longer than its pad can take: the slider has just
+       clamped it, so the document follows the thumb rather than the reverse */
+    if (parseFloat($('guideL').value) !== S.doc.params.guideL) {
+      S.doc.params.guideL = parseFloat($('guideL').value);
+    }
+    $('cellType').value = S.doc.cellType || 'custom';
+    $('arrangement').value = S.doc.arrangement || 'hex';
+    paintCut();
+    paintGeom();
+    SLIDE.settled = geomValues();
+  }
+
+  /* a document from an older version, or one saved before an option existed, is
+     still a valid pack: the new fields get a value and everything else is left
+     alone */
+  function normalise(doc) {
+    var p = doc.params;
+    if (!p) return doc;
+    p.cut = p.cut === 'lines' ? 'lines' : 'plate';
+    p.lineAngle = isFinite(p.lineAngle) ? Math.max(0, Math.min(90, p.lineAngle)) : 90;
+    p.guides = !!p.guides;
+    p.guideL = isFinite(p.guideL) ? Math.max(2, Math.min(20, p.guideL)) : 8;
+    return doc;
+  }
+
+  /* make a document (from a file, from undo, from storage) the live one */
+  function adoptDoc(doc) {
+    if (!doc || !doc.cells || !doc.islands || !doc.params) throw new Error('not a pack file');
+    if (!doc.islands.top) doc.islands.top = [];
+    if (!doc.islands.bottom) doc.islands.bottom = [];
+    doc.params.step = doc.params.step || 0.1;
+    doc.params.margin = doc.params.margin === undefined ? 8 : doc.params.margin;
+    if (!doc.arrangement) doc.arrangement = 'hex';
+    doc.params.pitch = doc.params.cellD + doc.params.gap;
+    normalise(doc);
+    S.doc = doc;
+    S.hover = null;
+    S.frame = null;
+    S.anim = [];        /* undo or a loaded file replaces the layout wholesale */
+    S.hiRow = null;
+    S.pick.clear();
+    S.marquee = null;
+    S.sheets.top = null;
+    S.sheets.bottom = null;
+    var list = S.doc.islands[S.face] || [];
+    S.sel = list.length ? list[0].id : null;
+    syncInputs();
+    renderPalette();
+    fitView();
+    rebuildAll();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* wiring                                                              */
+  /* ------------------------------------------------------------------ */
+
+  function num(id) { return parseFloat($(id).value); }
+
+  function applyCellSize() {
+    var d = num('cellD') || 21.2;
+    S.doc.params.cellD = d;
+    S.doc.params.gap = Math.max(0, num('gap'));
+    S.doc.params.pitch = d + S.doc.params.gap;
+    if (S.doc.params.padD > d - 0.4) {
+      S.doc.params.padD = Math.max(6, d - 0.4);
+      $('padD').value = S.doc.params.padD;
+      paintReadout($('padD'));
+    }
+    $('padD').max = Math.max(8, d - 0.4);
+    $('bridgeW').max = d + 6;
+    refreshLineDefaults();
+    paintGeom();
+  }
+
+  $('cellType').addEventListener('change', function () {
+    var v = this.value;
+    var map = { '18650': 18.4, '21700': 21.2, '26650': 26.5, '32700': 32.2, '4680': 46.2 };
+    if (map[v]) {
+      snapshot();
+      $('cellD').value = map[v];
+      S.doc.cellType = v;
+      applyCellSize();
+      var rows = parseInt($('rows').value, 10) || 13;
+      var cols = parseInt($('cols').value, 10) || 8;
+      fillGrid(S.doc, rows, cols);
+      S.sel = null;
+      renderPalette();
+      fitView();
+      rebuildAll();
+    } else {
+      S.doc.cellType = 'custom';
+    }
+  });
+
+  ['cellD', 'gap'].forEach(function (id) {
+    $(id).addEventListener('change', function () {
+      applyCellSize();
+      rebuildAll();
+      S.dirty = true;
+    });
+  });
+
+  $('arrangement').addEventListener('change', function () {
+    snapshot();
+    S.doc.arrangement = this.value;
+    /* a square pack has a 45 degree direction, a staggered one does not, so
+       the angle is snapped to what the new packing can actually do before the
+       sheet is built from it */
+    paintCut();
+    fillGrid(S.doc, parseInt($('rows').value, 10) || 13, parseInt($('cols').value, 10) || 8);
+    S.sel = null;
+    renderPalette();
+    fitView();
+    rebuildAll();
+  });
+
+  $('btnFill').addEventListener('click', function () {
+    snapshot();
+    fillGrid(S.doc, Math.max(1, parseInt($('rows').value, 10) || 13), Math.max(1, parseInt($('cols').value, 10) || 8));
+    S.sel = null;
+    renderPalette();
+    fitView();
+    rebuildAll();
+  });
+
+  $('btnClear').addEventListener('click', function () {
+    snapshot();
+    S.doc.cells = [];
+    S.doc.islands = { top: [], bottom: [] };
+    S.sel = null;
+    renderPalette();
+    fitView();
+    rebuildAll();
+  });
+
+  $('btnStripe').addEventListener('click', function () {
+    snapshot();
+    autoStripe();
+    renderPalette();
+    rebuildAll();
+    S.dirty = true;
+    toast('Striped into ' + S.doc.islands.top.length + ' top / ' + S.doc.islands.bottom.length + ' bottom islands');
+  });
+
+  $('btnClearFace').addEventListener('click', function () {
+    snapshot();
+    S.doc.islands[S.face] = [];
+    S.sel = null;
+    renderPalette();
+    rebuildAll();
+  });
+
+  $('btnTop').addEventListener('click', function () { setFace('top'); });
+  $('btnBottom').addEventListener('click', function () { setFace('bottom'); });
+
+  var TOOL_NOTES = {
+    paint: 'Paint: drag over cells to join them to the highlighted island. <b>Shift</b> paints the whole row, right-click erases.',
+    delete: 'Remove: click cells to pick them (click one again to drop it, drag a box on the bare sheet for many) - then <b>Del</b> or the bar. Nothing leaves the pack until you confirm, and one <b>Ctrl+Z</b> puts the lot back.',
+    flip: 'Flip: click a cell to turn it over. Its + moves to the other face, which is how a series chain is built.'
+  };
+
+  function setTool(tool) {
+    S.tool = tool;
+    /* a selection belongs to the tool that made it */
+    if (tool !== 'delete') { S.pick.clear(); S.marquee = null; S.pickBase = null; }
+    $('btnToolPaint').classList.toggle('on', tool === 'paint');
+    $('btnToolDel').classList.toggle('on', tool === 'delete');
+    $('btnToolFlip').classList.toggle('on', tool === 'flip');
+    cv.style.cursor = tool === 'paint' ? 'crosshair' : 'cell';
+    $('toolNote').innerHTML = TOOL_NOTES[tool] || TOOL_NOTES.paint;
+    selBar();
+    S.dirty = true;
+  }
+
+  $('btnToolPaint').addEventListener('click', function () { setTool('paint'); });
+  $('btnToolDel').addEventListener('click', function () { setTool('delete'); });
+  $('btnToolFlip').addEventListener('click', function () { setTool('flip'); });
+  $('btnSelDel').addEventListener('click', function () { removePicked(); });
+  $('btnSelClear').addEventListener('click', function () { unpick(); });
+  $('btnRotL').addEventListener('click', function () { rotateLayout(false); });
+  $('btnRotR').addEventListener('click', function () { rotateLayout(true); });
+
+  $('btnRowAdd').addEventListener('click', function () {
+    var before = REDUCED ? null : snapPrims(['top', 'bottom']);
+    var f0 = frameSig();
+    snapshot();
+    addRow();
+    finishEdit(before, f0, 'Row added - ' + S.doc.cells.length + ' cells in the pack');
+  });
+
+  $('btnRowDel').addEventListener('click', function () {
+    var before = REDUCED ? null : snapPrims(['top', 'bottom']);
+    var f0 = frameSig();
+    snapshot();
+    var n = delRow();
+    if (!n) { toast('No rows left'); return; }
+    finishEdit(before, f0, 'Row removed - ' + n + ' cells gone, ' + S.doc.cells.length + ' left');
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* cut style                                                           */
+  /*
+   * A plate is the strongest sheet and the shortest current path, but it
+   * spends metal on fields that carry nothing and it cannot give when the
+   * cells are not all exactly the same height. The weld-line cut keeps only
+   * what the welder and the current need: a pad on every spot, one band along
+   * the lines between them, and the fields between the bands cut away.
+   *
+   * Both are the same document with one flag, so the switch is one undo step,
+   * the cut files and the assembly map follow it, and a saved file remembers
+   * it. What follows the mode is what the reset arrows call a default: a
+   * 9.5 mm pad and a 6.5 mm band are right for a routed strip and silly for a
+   * plate, so the same two numbers mean different things in the two modes and
+   * the arrows put back the pair that belongs to the mode you are in.
+   */
+  /* ------------------------------------------------------------------ */
+
+  /* What the weld-line cut wants, scaled to the cell: a pad that covers the
+     weld spot and a band narrow enough to leave a slot between bands. The two
+     proportions are the ones in the reference strip - a 21700 gets a 9.5 mm
+     pad and a 6.5 mm band, a 18650 an 8.5 and a 5.5. */
+  function lineDefaults() {
+    var d = S.doc.params.cellD || 21.2;
+    return {
+      padD: Math.max(4, Math.round(d * 0.45 * 2) / 2),
+      bridgeW: Math.max(1.5, Math.round(d * 0.3 * 2) / 2)
+    };
+  }
+
+  /* the cut defaults move with the cell size, so they are written into the
+     sliders rather than fixed in the markup */
+  function refreshLineDefaults() {
+    var d = lineDefaults();
+    $('padD').dataset.defLines = String(d.padD);
+    $('bridgeW').dataset.defLines = String(d.bridgeW);
+    /* the slits scale with the pad they are cut into rather than with the
+       cell: a 9.5 mm strip pad gets half the slit an 18 mm plate pad does */
+    $('guideL').dataset.def = String(Math.round((S.doc.params.padD || 18) * 0.45 * 2) / 2);
+  }
+
+  /* The slit has to stay inside the pad, or it would cut the pad free of the
+     strip: its longest length is a pad's worth of metal, and the slider's top
+     follows Pad D. The same "a default is a wish, not a promise" rule the pad
+     itself follows against the cell, one level down. */
+  function syncGuideMax() {
+    var el = $('guideL');
+    var m = Math.max(2, Math.floor(G.guideMaxLen(S.doc.params) * 2) / 2);
+    if (parseFloat(el.max) !== m) el.max = String(m);
+  }
+
+  /* The packing decides which directions the metal can run in: a square grid
+     has rows, diagonals and columns; a staggered one has rows, two diagonals
+     and columns. Offering 45 degrees on a staggered pack draws a strip that
+     crosses itself and fills the fields it was supposed to cut away, so the
+     slider only has the stops the lattice actually has. */
+  function angleStep() { return S.doc.arrangement === 'square' ? 45 : 30; }
+
+  function snapAngle(v) {
+    var s = angleStep();
+    return Math.max(0, Math.min(90, Math.round((isFinite(v) ? v : 90) / s) * s));
+  }
+
+  function syncAngleControl() {
+    var el = $('lineAngle');
+    /* read the value before the step is changed: a range rounds what it is
+       holding to the new step, so the number in the document has to be taken
+       from the value that was there and snapped by hand */
+    var v = snapAngle(parseFloat(el.value));
+    el.step = angleStep();
+    if (v !== parseFloat(el.value)) el.value = v;
+    S.doc.params.lineAngle = v;
+  }
+
+  function paintCut() {
+    var p = S.doc.params;
+    var lines = p.cut === 'lines';
+    var guides = !!p.guides;
+    syncAngleControl();
+    $('btnCutPlate').classList.toggle('on', !lines);
+    $('btnCutLines').classList.toggle('on', lines);
+    $('guideOn').checked = guides;
+    $('guideLRow').hidden = !guides;
+    /* the angle is the direction of the cut features - the bands, the slits, or
+       both - so it belongs to whichever of them is on */
+    $('lineAngleRow').hidden = !(lines || guides);
+    var how = '<b>Angle</b> sets which way the ' +
+      (lines && guides ? 'bands and the slits run' : guides ? 'slits run' : 'bands run') +
+      ' &mdash; rows, diagonals or columns.';
+    $('cutNote').innerHTML = lines
+      ? (guides
+          ? 'Weld lines with guide slits: a pad and a slit on every weld spot, one band along the lines between them. ' + how
+          : 'Weld lines: a pad on every weld spot, one band along the lines between them, and the fields between the bands cut away. ' + how)
+      : (guides
+          ? 'Plate with guide slits: the plate stays one piece, and every weld spot gets a 1.2 mm slit at the cell centre to see, feel and weld by &mdash; the same short line the strips on the market carry. ' + how
+          : 'Plate: one solid piece per island, the union of every pad and strap &mdash; strongest, and the shortest current path.');
+  }
+
+  function setCut(mode) {
+    if (mode !== 'lines') mode = 'plate';
+    var p = S.doc.params;
+    if ((p.cut || 'plate') === mode) return;
+    snapshot();
+    p.cut = mode;
+    var preset = null;
+    if (mode === 'lines' && (p.bridgeW > p.pitch * 0.5 || p.padD > p.pitch * 0.5)) {
+      /* plate-sized numbers leave no room for a slot: the bands would meet and
+         the cut would look like a slightly chewed plate. Start the strip at the
+         widths this cut is for - the same snapshot puts both back. */
+      preset = lineDefaults();
+      $('bridgeW').value = preset.bridgeW;
+      applyRange($('bridgeW'));
+      $('padD').value = preset.padD;
+      applyRange($('padD'));
+    }
+    paintCut();
+    paintGeom();
+    rebuildAll();
+    S.dirty = true;
+    var deg = (p.lineAngle || 0) + '\u00b0';
+    toast(mode === 'lines'
+      ? 'Weld-line cut at ' + deg + (preset
+          ? ' - pad ' + preset.padD.toFixed(1) + ', strap ' + preset.bridgeW.toFixed(1) + ' mm so the slots stay open'
+          : '')
+      : 'Solid plate again');
+  }
+
+  /* The slits are a cut like the rest of the sheet, so this is one undo step,
+     it lands in the document, and the exports and the assembly map follow it.
+     It is not a third cut style: a strip with slits is exactly what the market
+     sells, so it has to be able to sit on top of either style. */
+  function setGuides(on) {
+    on = !!on;
+    var p = S.doc.params;
+    if (!!p.guides === on) { $('guideOn').checked = on; return; }
+    snapshot();
+    p.guides = on;
+    paintCut();
+    paintGeom();
+    rebuildAll();
+    S.dirty = true;
+    if (!on) { toast('Guide slits off - plain ' + (p.cut === 'lines' ? 'weld-line cut' : 'plate')); return; }
+    var n = 0;
+    var list = (S.sheets[S.face] || { islands: [] }).islands;
+    for (var i = 0; i < list.length; i++) n += list[i].slots ? list[i].slots.length : 0;
+    var len = Math.min(p.guideL || 8, G.guideMaxLen(p));
+    toast(n + (n === 1 ? ' guide slit' : ' guide slits') + ' on the ' + S.face + ' - ' +
+          (Math.round(len * 10) / 10) + ' mm at ' + (p.lineAngle || 0) + '\u00b0');
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* the geometry sliders                                                */
+  /*
+   * Three things turn these from form fields into instruments.
+   *
+   * The sheet follows the thumb. A range input only fires "change" when the
+   * button comes up, so a drag used to be invisible until it was over: the
+   * number moved and the drawing did not, which reads as a slider that does
+   * not work. Every "input" now redraws, throttled, and "change" does the
+   * full rebuild.
+   *
+   * One drag is one undo step. The snapshot is taken on the first value that
+   * actually differs, not on every pointer move.
+   *
+   * Any number can be put back. Every row knows its own default, so a slider
+   * that was nudged while hunting for a look can just be reset.
+   */
+  /* ------------------------------------------------------------------ */
+
+  var PREVIEW_MS = 55;
+  var SLIDE = { down: false, took: false, timer: 0, last: -1e9, gap: 55, settled: '' };
+
+  /* every slider in the panel, including the ones whose row is hidden: the
+     listeners are bound to all of them, while the reset count and the "has the
+     sheet settled" signature only look at what is on screen */
+  function allRanges() {
+    return Array.prototype.slice.call(document.querySelectorAll('#geom input[type=range]'));
+  }
+
+  function geomRanges() {
+    return allRanges().filter(function (el) { return !el.parentElement.hidden; });
+  }
+
+  function geomValues() {
+    return geomRanges().map(function (el) { return el.value; }).join(',');
+  }
+
+  /* a default is a wish, not a promise: a 4680 pack cannot have an 18 mm pad
+     back once the cell size says otherwise, so the value is bounded first and
+     then compared, which keeps the "changed" marks honest. The weld-line cut
+     brings its own pair of defaults for the two widths, since a routed strip
+     wants a much narrower band than a plate does. */
+  function rangeDefault(el) {
+    var d = parseFloat(el.dataset.def);
+    if (el.dataset.defLines && S.doc.params.cut === 'lines') d = parseFloat(el.dataset.defLines);
+    var lo = parseFloat(el.min), hi = parseFloat(el.max);
+    if (!isFinite(hi)) return d;
+    return Math.min(hi, Math.max(lo, d));
+  }
+
+  /* the filled part of the track is a CSS gradient, so every value change has
+     to hand it the new position; the accent on the number and on the reset
+     arrow is the cheap way to see at a glance what has been touched */
+  function paintRange(el) {
+    var lo = parseFloat(el.min), hi = parseFloat(el.max), v = parseFloat(el.value);
+    var pct = hi > lo ? Math.max(0, Math.min(1, (v - lo) / (hi - lo))) * 100 : 0;
+    el.style.setProperty('--p', pct.toFixed(2) + '%');
+    var row = el.parentElement;
+    if (row && row.classList) row.classList.toggle('changed', Math.abs(v - rangeDefault(el)) > 1e-9);
+  }
+
+  function paintReadout(el) {
+    var out = $(el.id + 'v');
+    if (!out) return;
+    var dig = parseInt(el.dataset.dig, 10) || 0;
+    var v = parseFloat(el.value);
+    out.textContent = (dig > 0 ? v.toFixed(dig) : String(Math.round(v))) + (el.dataset.unit || '');
+  }
+
+  function paintGeomHeader() {
+    var btn = $('btnGeomReset'), n = 0;
+    geomRanges().forEach(function (el) {
+      if (Math.abs(parseFloat(el.value) - rangeDefault(el)) > 1e-9) n++;
+    });
+    btn.textContent = n ? 'reset ' + n : 'reset';
+    btn.classList.toggle('on', n > 0);
+    btn.title = n
+      ? 'Put ' + n + (n > 1 ? ' sliders' : ' slider') + ' back to ' + (n > 1 ? 'their defaults' : 'its default')
+      : 'Every geometry slider is at its default';
+  }
+
+  /* the arrow has to name the default it will actually restore, which now
+     depends on the cut style and on the cell size */
+  function paintGeomTitles() {
+    geomRanges().forEach(function (el) {
+      var btn = document.querySelector('#geom .rst[data-for="' + el.id + '"]');
+      if (!btn) return;
+      var d = rangeDefault(el);
+      var dig = parseInt(el.dataset.dig, 10) || 0;
+      btn.title = 'Put ' + el.dataset.label + ' back to ' +
+        (dig > 0 ? d.toFixed(dig) : String(Math.round(d))) + (el.dataset.unit || ' mm');
+    });
+  }
+
+  function paintGeom() {
+    refreshLineDefaults();
+    syncGuideMax();
+    allRanges().forEach(paintReadout);
+    allRanges().forEach(paintRange);
+    paintGeomHeader();
+    paintGeomTitles();
+  }
+
+  /* the one place where a slider's number lands in the document */
+  function applyRange(el) {
+    var key = el.dataset.key;
+    var v = parseFloat(el.value);
+    if (key === 'padD') v = Math.min(v, S.doc.params.cellD - 0.4);
+    if (key === 'guideL') v = Math.min(v, parseFloat(el.max));
+    S.doc.params[key] = v;
+    /* a pad narrowed under a slit brings the slit with it: the number that no
+       longer fits is replaced by the length a pad of this size deserves, rather
+       than left at a value the metal does not have room for */
+    if (key === 'padD') {
+      refreshLineDefaults();
+      syncGuideMax();
+      var gl = $('guideL');
+      if (parseFloat(gl.value) !== S.doc.params.guideL) {
+        var want = Math.min(rangeDefault(gl), parseFloat(gl.max));
+        gl.value = want;
+        S.doc.params.guideL = want;
+        paintReadout(gl);
+        paintRange(gl);
+      }
+    }
+    paintReadout(el);
+    paintRange(el);
+    paintGeomHeader();
+    S.dirty = true;
+  }
+
+  /* A 250 cell pack takes about 40 ms to trace, so a rebuild on every pointer
+     move would crawl. Spacing the previews keeps the thumb responsive, and
+     only the face on screen has to be built - the other one is put back by
+     the full rebuild when the value stops moving. */
+  function previewGeom() {
+    SLIDE.timer = 0;
+    var t0 = performance.now();
+    var before = S.frame;
+    S.frame = G.frameOf(S.doc);
+    S.sheets[S.face] = null;
+    /* a ghost of the far sheet is better stale than gone while the thumb is
+       down: it is rebuilt with everything else when the value settles. It only
+       has to go if the frame moved, since it is drawn in these coordinates. */
+    var moved = !before || before.W !== S.frame.W || before.H !== S.frame.H ||
+                before.ox !== S.frame.ox || before.oy !== S.frame.oy;
+    if (!S.ghost || moved) S.sheets[otherFace()] = null;
+    ensureSheet(S.face);
+    S.dirty = true;
+    SLIDE.last = performance.now();
+    /* a big pack traces slower than a small one, so the gap is set from what
+       the last preview actually cost: about a third of the time goes to the
+       drawing, the rest to the hand on the mouse */
+    SLIDE.gap = Math.max(PREVIEW_MS, Math.round((SLIDE.last - t0) * 2.2));
+    if (!isFinite(SLIDE.gap)) SLIDE.gap = PREVIEW_MS;
+  }
+
+  function previewSoon() {
+    if (SLIDE.timer) return;
+    var wait = SLIDE.gap - (performance.now() - SLIDE.last);
+    SLIDE.timer = setTimeout(previewGeom, wait > 0 ? wait : 0);
+  }
+
+  /* the value stopped moving: build everything, once */
+  function commitSlide() {
+    if (SLIDE.timer) { clearTimeout(SLIDE.timer); SLIDE.timer = 0; }
+    SLIDE.down = false;
+    var sig = geomValues();
+    /* a drag that ends where it started still has to put the other face back */
+    if (sig === SLIDE.settled && S.sheets.top && S.sheets.bottom) return;
+    SLIDE.settled = sig;
+    rebuildAll();
+  }
+
+  function resetRanges(only) {
+    /* every slider, including the ones whose row is hidden: "reset" is a
+       promise about the numbers, and a hidden one is still a number the sheet
+       will be cut with. A visible-only reset left the guide length belonging
+       to the pad that had just been replaced - the slider was gone, so the
+       stale value was too. */
+    var list = allRanges().filter(function (el) { return !only || el.id === only; });
+    var todo = list.filter(function (el) {
+      return Math.abs(parseFloat(el.value) - rangeDefault(el)) > 1e-9;
+    });
+    if (!todo.length) {
+      toast(only ? $(only).dataset.label + ' is already at its default'
+                 : 'Every geometry slider is already at its default');
+      return;
+    }
+    snapshot();
+    /* Pad D first, because the guide length is a proportion of the pad: the
+       panel order is not the dependency order, so the slider whose size other
+       defaults read has to land before them. */
+    var ordered = list.filter(function (el) { return el.id === 'padD'; })
+                      .concat(list.filter(function (el) { return el.id !== 'padD'; }));
+    ordered.forEach(function (el) {
+      var d = rangeDefault(el);
+      if (Math.abs(parseFloat(el.value) - d) <= 1e-9) return;
+      el.value = d;
+      applyRange(el);
+    });
+    commitSlide();
+    toast(only
+      ? $(only).dataset.label + ' back to ' + $(only).value + ($(only).dataset.unit || ' mm')
+      : todo.length + (todo.length > 1 ? ' sliders' : ' slider') + ' back to default');
+  }
+
+  function initRange(el) {
+    el.addEventListener('pointerdown', function () {
+      SLIDE.down = true;
+      SLIDE.took = false;
+    });
+    el.addEventListener('input', function () {
+      /* the first value that differs earns the undo step, so a whole drag is
+         put back by one Ctrl+Z rather than forty */
+      if (!SLIDE.took) { SLIDE.took = true; snapshot(); }
+      applyRange(el);
+      if (SLIDE.down) previewSoon();
+    });
+    el.addEventListener('change', function () {
+      applyRange(el);
+      commitSlide();
+      SLIDE.took = false;
+    });
+    el.addEventListener('dblclick', function (ev) {
+      ev.preventDefault();
+      resetRanges(el.id);
+    });
+    paintRange(el);
+  }
+
+  allRanges().forEach(initRange);
+
+  /* a release that never reaches the slider (pointer left the window) still
+     has to finish the edit */
+  window.addEventListener('pointerup', function () { if (SLIDE.down) commitSlide(); });
+  window.addEventListener('pointercancel', function () { if (SLIDE.down) commitSlide(); });
+  window.addEventListener('blur', function () { if (SLIDE.down) commitSlide(); });
+
+  $('btnGeomReset').addEventListener('click', function () { resetRanges(null); });
+
+  Array.prototype.forEach.call(document.querySelectorAll('#geom .rst'), function (btn) {
+    btn.addEventListener('click', function () { resetRanges(btn.dataset.for); });
+  });
+
+  $('btnCutPlate').addEventListener('click', function () { setCut('plate'); });
+  $('btnCutLines').addEventListener('click', function () { setCut('lines'); });
+  $('guideOn').addEventListener('change', function () { setGuides(this.checked); });
+
+  $('ghostOther').addEventListener('change', function () { setGhost(this.checked); });
+
+  $('btnSvg').addEventListener('click', function () { exportSheets('svg', 'both'); });
+  $('btnDxf').addEventListener('click', function () { exportSheets('dxf', 'both'); });
+  $('btnSvgTop').addEventListener('click', function () { exportSheets('svg', 'top'); });
+  $('btnSvgBot').addEventListener('click', function () { exportSheets('svg', 'bottom'); });
+  $('btnDxfTop').addEventListener('click', function () { exportSheets('dxf', 'top'); });
+  $('btnDxfBot').addEventListener('click', function () { exportSheets('dxf', 'bottom'); });
+
+  $('btnPrint').addEventListener('click', function () {
+    rebuildAll();
+    download(baseName() + '-assembly-map.svg', G.toPrint(S.doc, S.sheets.top, S.sheets.bottom), 'image/svg+xml');
+    toast('Assembly map written');
+  });
+
+  $('btnSave').addEventListener('click', function () {
+    download(baseName() + '.json', JSON.stringify(S.doc, null, 1), 'application/json');
+  });
+
+  $('btnLoad').addEventListener('click', function () { $('file').click(); });
+  $('file').addEventListener('change', function (ev) {
+    var f = ev.target.files[0];
+    if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function () {
+      try {
+        var doc = JSON.parse(rd.result);
+        snapshot();
+        adoptDoc(doc);
+        toast('Loaded ' + doc.cells.length + ' cells');
+      } catch (e) {
+        toast('Could not read that file: ' + e.message);
+      }
+      ev.target.value = '';
+    };
+    rd.readAsText(f);
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* boot                                                                */
+  /* ------------------------------------------------------------------ */
+
+  function boot() {
+    var saved = null;
+    try { saved = localStorage.getItem('battery-architect.doc'); } catch (e) { }
+    S.doc = saved ? JSON.parse(saved) : defaultDoc();
+    if (!S.doc.arrangement) S.doc.arrangement = 'hex';
+    if (!S.doc.islands.top) S.doc.islands.top = [];
+    if (!S.doc.islands.bottom) S.doc.islands.bottom = [];
+    S.doc.params.pitch = S.doc.params.cellD + S.doc.params.gap;
+    normalise(S.doc);
+
+    if (!S.doc.cells.length) {
+      fillGrid(S.doc, 13, 8);
+    }
+    if (!S.doc.islands.top.length && !S.doc.islands.bottom.length) {
+      autoStripe();
+    }
+    S.sel = S.doc.islands.top.length ? S.doc.islands.top[0].id : null;
+
+    syncInputs();
+    setTool('paint');
+    resize();
+    fitView();
+    renderPalette();
+    rebuildAll();
+
+    setInterval(function () {
+      try { localStorage.setItem('battery-architect.doc', JSON.stringify(S.doc)); } catch (e) { }
+    }, 4000);
+  }
+
+  window.addEventListener('resize', function () { resize(); S.dirty = true; });
+
+  function loop() {
+    /* an animation is the only thing that keeps asking for frames */
+    if (S.anim.length) S.dirty = true;
+    if (S.dirty) draw();
+    requestAnimationFrame(loop);
+  }
+
+  boot();
+  requestAnimationFrame(loop);
+
+  /* A handle for tests/smoke-app.js and for poking at the state from the
+     browser console. The app never reads it back. */
+  window.__ba = { state: S, geo: G, rebuild: rebuildAll, tool: setTool, rows: renderRows, anim: drawAnim, frame: draw, ghost: setGhost, guides: setGuides };
+})();
+</script>
+</body>
+</html>
