@@ -86,6 +86,41 @@ const harness = `
     });
     return best;
   }
+  function cellFrac(cell) {
+    var st = B.state, f = st.frame;
+    var p = B.geo.cellOnFace(st.doc, f, st.face, cell);
+    return { x: p.x / f.W, y: p.y / f.H, cell: cell };
+  }
+  function byId(id) {
+    var list = B.state.doc.cells;
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+  /* find two islands whose cell path is long, preferring both ends on the
+     same sheet like the hand-drawn example */
+  function bestFlowPair() {
+    var doc = B.state.doc, nodes = [];
+    ['top', 'bottom'].forEach(function (face) {
+      (doc.islands[face] || []).forEach(function (isl) {
+        if (isl.cells.length) nodes.push({ face: face, cell: isl.cells[0], name: isl.name });
+      });
+    });
+    var saved = doc.terminals, best = null;
+    for (var i = 0; i < nodes.length; i++) {
+      for (var j = 0; j < nodes.length; j++) {
+        if (i === j) continue;
+        doc.terminals = {
+          neg: { face: nodes[i].face, cell: nodes[i].cell },
+          pos: { face: nodes[j].face, cell: nodes[j].cell }
+        };
+        var p = B.geo.currentPath(doc);
+        var score = p.ok ? p.cells.length + (nodes[i].face === nodes[j].face ? 100 : 0) : -1;
+        if (score > 0 && (!best || score > best.score)) best = { neg: nodes[i], pos: nodes[j], p: p, score: score };
+      }
+    }
+    doc.terminals = saved;
+    return best;
+  }
   function key(k) {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
   }
@@ -107,6 +142,71 @@ const harness = `
   var d2 = dims();
   P(Math.abs(d2[0] - d0[0]) < 0.2 && Math.abs(d2[1] - d0[1]) < 0.2,
     'four turns are a full circle', d2.join(' x '));
+
+  /* ---------------------------------------------------------------- */
+  /* electrical checks                                                 */
+  /* ---------------------------------------------------------------- */
+  P(txt('sNet') === 'no shorts', 'the booted auto-striped pack has no shorts', txt('sNet'));
+  document.getElementById('btnToolFlip').click();
+  var shed = findCell(null);
+  if (shed) {
+    var cleanShorts = B.state.drc.filter(function (d) { return d.kind === 'short'; }).length;
+    press(shed.x, shed.y);
+    P(B.state.drc.some(function (d) { return d.kind === 'short'; }),
+      'flipping one cell inside a parallel group is reported as a short');
+    P(/short/.test(txt('sNet')), 'the electrical stat says so', txt('sNet'));
+    press(shed.x, shed.y);
+    P(B.state.drc.filter(function (d) { return d.kind === 'short'; }).length === cleanShorts,
+      'flipping it back clears the short');
+  } else {
+    P(false, 'found a cell to test the short check');
+  }
+  document.getElementById('btnToolPaint').click();
+  P(txt('sNet') === 'no shorts', 'and the pack is sound again', txt('sNet'));
+
+  /* ---------------------------------------------------------------- */
+  /* pack ends and the main current path                               */
+  /* ---------------------------------------------------------------- */
+  P(txt('sEnds') === '\\u2212 - / + -', 'no pack ends at boot', txt('sEnds'));
+  var pair = bestFlowPair();
+  P(!!pair, 'found two islands with a series path',
+    pair ? pair.neg.name + ' -> ' + pair.pos.name + ' (' + pair.p.cells.length + ' cells)' : 'none');
+  if (pair) {
+    var faceBtn = function (face) { return document.getElementById(face === 'bottom' ? 'btnBottom' : 'btnTop'); };
+    if (B.state.face !== pair.neg.face) faceBtn(pair.neg.face).click();
+    document.getElementById('btnTermNeg').click();
+    P(B.state.terminalPick === 'neg', 'the negative end is armed');
+    var negAt = cellFrac(byId(pair.neg.cell));
+    press(negAt.x, negAt.y);
+    P(B.state.doc.terminals.neg && B.state.doc.terminals.neg.face === pair.neg.face &&
+      B.state.doc.terminals.neg.cell === pair.neg.cell, 'the negative end lands on the clicked pad');
+    P(B.state.flowPath && B.state.flowPath.reason === 'partial', 'one end is reported as partial');
+
+    if (B.state.face !== pair.pos.face) faceBtn(pair.pos.face).click();
+    document.getElementById('btnTermPos').click();
+    var posAt = cellFrac(byId(pair.pos.cell));
+    press(posAt.x, posAt.y);
+    P(B.state.doc.terminals.pos && B.state.doc.terminals.pos.face === pair.pos.face &&
+      B.state.doc.terminals.pos.cell === pair.pos.cell, 'the positive end lands on the clicked pad');
+    P(B.state.flowPath && B.state.flowPath.ok, 'two ends trace a main current path',
+      B.state.flowPath ? B.state.flowPath.reason : 'none');
+    P(B.state.flowPath && B.state.flowPath.cells.length === pair.p.cells.length,
+      'the path covers the series chain', B.state.flowPath ? B.state.flowPath.cells.length + ' cells' : 'none');
+    P(/Main path/.test(txt('flowNote')), 'the current panel reports the path', txt('flowNote'));
+    P(/cells/.test(txt('sPath')), 'the Sheet path stat updates', txt('sPath'));
+    P(/TOP|BOT/.test(txt('sEnds')), 'the Sheet ends stat updates', txt('sEnds'));
+    P(B.state.flowOn && document.getElementById('flowOn').checked, 'the flow is shown by default');
+
+    key('c');
+    P(!B.state.flowOn && !document.getElementById('flowOn').checked, 'C hides the current flow');
+    key('c');
+    P(B.state.flowOn, 'C shows it again');
+
+    document.getElementById('btnTermClear').click();
+    P(!B.state.doc.terminals.neg && !B.state.doc.terminals.pos, 'clear both ends');
+    P(B.state.flowPath && B.state.flowPath.reason === 'none', 'and the path goes away');
+    if (B.state.face !== 'top') document.getElementById('btnTop').click();
+  }
 
   /* ---------------------------------------------------------------- */
   /* picking cells, then removing them                                 */

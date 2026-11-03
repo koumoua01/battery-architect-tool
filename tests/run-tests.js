@@ -150,6 +150,208 @@ const drc2 = G.diagnose(broken);
 ok(drc2.some(d => d.level === 'warn'), 'detects an unconnected terminal');
 
 /* ------------------------------------------------------------------ */
+/* electrical checks                                                   */
+/* ------------------------------------------------------------------ */
+
+console.log('electrical checks');
+
+/* a cell turned over inside a parallel group connects + to - through the
+   same pair of islands: the two cells short each other */
+const shorted = JSON.parse(JSON.stringify(doc));
+shorted.cells[0].flip = true;
+const shortDrc = G.diagnose(shorted);
+ok(shortDrc.some(d => d.kind === 'short' && d.level === 'error'), 'a reversed cell in a parallel group is a short');
+ok(!drc.some(d => d.kind === 'short'), 'the complete layout is not shorted');
+
+/* flipping a whole group is how the series chain is built, so it must not
+   be mistaken for a short: the bottom island becomes the series junction */
+const series = JSON.parse(JSON.stringify(doc));
+for (const id of series.islands.top[1].cells) series.cells.find(c => c.id === id).flip = true;
+ok(!G.diagnose(series).some(d => d.kind === 'short'), 'a fully flipped group is a series junction, not a short');
+
+/* a loop can also be wrong without any two cells sharing the same pair of
+   islands: four cells around four islands, with one of them reversed */
+const loop = {
+  version: 1, name: 'loop', cellType: '21700', arrangement: 'square',
+  cells: [
+    { id: 'a', x: 0, y: 0, flip: false }, { id: 'b', x: 21.8, y: 0, flip: false },
+    { id: 'c', x: 0, y: 21.8, flip: false }, { id: 'd', x: 21.8, y: 21.8, flip: true }
+  ],
+  islands: {
+    top: [
+      { id: 't1', name: 'T1', color: '#4fc3f7', cells: ['a', 'c'] },
+      { id: 't2', name: 'T2', color: '#aed581', cells: ['b', 'd'] }
+    ],
+    bottom: [
+      { id: 'b1', name: 'B1', color: '#ffb74d', cells: ['a', 'b'] },
+      { id: 'b2', name: 'B2', color: '#ba68c8', cells: ['c', 'd'] }
+    ]
+  },
+  params: { cellD: 21.2, gap: 0.6, pitch: 21.8, padD: 18, bridgeW: 18, kerf: 0.1, margin: 8, step: 0.1 }
+};
+ok(G.diagnose(loop).some(d => d.kind === 'short' && /closed loop/.test(d.text)),
+  'a four-island loop with one reversed cell is caught');
+
+/* two cans in the same place cannot be built */
+const overlap = JSON.parse(JSON.stringify(doc));
+overlap.cells.push({ id: 'dup', x: overlap.cells[0].x, y: overlap.cells[0].y, flip: false });
+ok(G.diagnose(overlap).some(d => d.kind === 'data' && /overlap/.test(d.text)), 'overlapping cells are caught');
+
+/* metal wider than the cell reaches the neighbouring can */
+const fat = JSON.parse(JSON.stringify(doc));
+fat.params.padD = 24;
+ok(G.diagnose(fat).some(d => /reaches past the can/.test(d.text)), 'a pad wider than the cell is flagged');
+
+/* bands that meet leave no slots to flex or to cut */
+const closed = JSON.parse(JSON.stringify(doc));
+closed.params.cut = 'lines';
+closed.params.lineAngle = 90;
+closed.params.padD = 9.5;
+closed.params.bridgeW = 18;
+ok(G.diagnose(closed).some(d => /slots between them have closed/.test(d.text)), 'a strap as wide as the band spacing closes the slots');
+
+/* and a good strip is quiet */
+const goodStrip = JSON.parse(JSON.stringify(closed));
+goodStrip.params.bridgeW = 6.5;
+ok(!G.diagnose(goodStrip).some(d => d.level === 'warn' || d.level === 'error'), 'a correctly sized strip passes the flow check');
+
+/* broken documents should say what is wrong, not throw or stay silent */
+const dupCell = JSON.parse(JSON.stringify(doc));
+dupCell.cells.push({ id: dupCell.cells[0].id, x: 500, y: 500, flip: false });
+ok(G.diagnose(dupCell).some(d => /used twice/.test(d.text)), 'duplicate cell ids are caught');
+
+const badPos = JSON.parse(JSON.stringify(doc));
+badPos.cells[0].x = NaN;
+ok(G.diagnose(badPos).some(d => /no valid position/.test(d.text)), 'a cell without a position is caught');
+
+const dupIsland = JSON.parse(JSON.stringify(doc));
+dupIsland.islands.top[1].id = dupIsland.islands.top[0].id;
+ok(G.diagnose(dupIsland).some(d => /used twice on the/.test(d.text)), 'duplicate island ids are caught');
+
+const noIslandId = JSON.parse(JSON.stringify(doc));
+delete noIslandId.islands.top[0].id;
+ok(G.diagnose(noIslandId).some(d => /has no id/.test(d.text)), 'an island without an id is caught');
+
+const ghostCell = JSON.parse(JSON.stringify(doc));
+ghostCell.islands.top[0].cells.push('not-a-cell');
+ok(G.diagnose(ghostCell).some(d => /not in the pack/.test(d.text)), 'an island naming a missing cell is caught');
+
+const twiceInIsland = JSON.parse(JSON.stringify(doc));
+twiceInIsland.islands.top[0].cells.push(twiceInIsland.islands.top[0].cells[0]);
+ok(G.diagnose(twiceInIsland).some(d => /listed twice in/.test(d.text)), 'a cell listed twice in one island is caught');
+
+const twoIslands = JSON.parse(JSON.stringify(doc));
+twoIslands.islands.top[1].cells.push(twoIslands.islands.top[0].cells[0]);
+ok(G.diagnose(twoIslands).some(d => /in two islands/.test(d.text)), 'a cell claimed by two islands is caught');
+
+/* ------------------------------------------------------------------ */
+/* pack ends and the main current path                                 */
+/* ------------------------------------------------------------------ */
+
+console.log('current path');
+
+/* A chain that starts and ends on the bottom sheet: a -> top -> bottom ->
+   top -> bottom. Both pack ends are therefore bottom islands, which is the
+   case the hand-drawn sketch shows. */
+const chain = {
+  version: 1, name: 'chain', arrangement: 'square',
+  cells: [
+    { id: 'a', x: 0, y: 0, flip: false },
+    { id: 'b', x: 21.8, y: 0, flip: true },
+    { id: 'c', x: 43.6, y: 0, flip: false },
+    { id: 'd', x: 65.4, y: 0, flip: true }
+  ],
+  islands: {
+    top: [
+      { id: 't1', name: 'T1', color: '#4fc3f7', cells: ['a', 'b'] },
+      { id: 't2', name: 'T2', color: '#aed581', cells: ['c', 'd'] }
+    ],
+    bottom: [
+      { id: 'b0', name: 'B0', color: '#ffb74d', cells: ['a'] },
+      { id: 'b1', name: 'B1', color: '#ba68c8', cells: ['b', 'c'] },
+      { id: 'b2', name: 'B2', color: '#4db6ac', cells: ['d'] }
+    ]
+  },
+  params: { cellD: 21.2, gap: 0.6, pitch: 21.8, padD: 18, bridgeW: 18, kerf: 0.1, margin: 8, step: 0.1 },
+  terminals: { neg: { face: 'bottom', cell: 'a' }, pos: { face: 'bottom', cell: 'd' } }
+};
+
+const flow = G.currentPath(chain);
+ok(flow.ok && flow.reason === 'ok', 'a chain between two bottom ends has a current path');
+ok(flow.cells.join(',') === 'a,b,c,d', 'the path visits every series cell in order', flow.cells.join(','));
+ok(flow.spans.length === 3, 'and crosses three islands of metal', flow.spans.length + ' spans');
+ok(flow.spans.every(s => s.cells.length >= 2), 'every span follows the metal between two pads');
+ok(flow.points.length >= 4 && flow.length > 60, 'the traced route has length', flow.length.toFixed(1) + ' mm');
+ok(G.diagnose(chain).some(d => d.kind === 'flow' && d.level === 'info' && /Main current path/.test(d.text)),
+  'the checker reports the path as a note');
+
+const noEnds = JSON.parse(JSON.stringify(chain));
+noEnds.terminals = { neg: null, pos: null };
+ok(G.currentPath(noEnds).reason === 'none', 'no ends means no path');
+
+const oneEnd = JSON.parse(JSON.stringify(chain));
+oneEnd.terminals.pos = null;
+ok(G.currentPath(oneEnd).reason === 'partial', 'one end is reported as partial');
+
+const samePad = JSON.parse(JSON.stringify(chain));
+samePad.terminals.pos = { face: 'bottom', cell: 'a' };
+ok(G.currentPath(samePad).reason === 'same-cell', 'both ends on one pad is refused');
+
+/* the tabs can sit on a different pad of the end islands than the first and
+   last series cells; the route still has to reach them */
+const longEnds = JSON.parse(JSON.stringify(chain));
+longEnds.cells.push({ id: 'tn', x: 0, y: 21.8, flip: false });
+longEnds.cells.push({ id: 'tp', x: 65.4, y: 21.8, flip: false });
+longEnds.islands.bottom[0].cells.push('tn');
+longEnds.islands.bottom[2].cells.push('tp');
+longEnds.terminals = { neg: { face: 'bottom', cell: 'tn' }, pos: { face: 'bottom', cell: 'tp' } };
+const longFlow = G.currentPath(longEnds);
+ok(longFlow.ok && longFlow.spans.length === 5, 'the route joins both tabs to the series cells',
+  longFlow.spans.length + ' spans');
+ok(longFlow.spans[0].cells[0] === 'tn' &&
+   longFlow.spans[longFlow.spans.length - 1].cells.slice(-1)[0] === 'tp',
+  'and starts and ends on the chosen pads');
+
+/* one end on each sheet, and the positive tab on a pad that is on the end
+   island but is not itself the last series cell */
+const cross = JSON.parse(JSON.stringify(chain));
+cross.terminals = { neg: { face: 'bottom', cell: 'a' }, pos: { face: 'top', cell: 'd' } };
+const crossFlow = G.currentPath(cross);
+ok(crossFlow.ok && crossFlow.cells.join(',') === 'a,b,c',
+  'one end on each sheet follows the directed chain', crossFlow.cells.join(','));
+ok(crossFlow.spans[crossFlow.spans.length - 1].cells.slice(-1)[0] === 'd',
+  'and the positive tab is joined to the end island');
+
+const sameIsland = JSON.parse(JSON.stringify(chain));
+sameIsland.cells.push({ id: 'a2', x: 0, y: 21.8, flip: false });
+sameIsland.islands.bottom[0].cells.push('a2');
+sameIsland.terminals.pos = { face: 'bottom', cell: 'a2' };
+ok(G.currentPath(sameIsland).reason === 'same-island', 'two ends on one island is reported');
+
+const missingEnd = JSON.parse(JSON.stringify(chain));
+missingEnd.terminals.pos = { face: 'bottom', cell: 'gone' };
+ok(G.currentPath(missingEnd).reason === 'missing', 'an end pointing at a missing cell is reported');
+
+const looseEnd = JSON.parse(JSON.stringify(chain));
+looseEnd.cells.push({ id: 'loose', x: 90, y: 0, flip: false });
+looseEnd.terminals.pos = { face: 'bottom', cell: 'loose' };
+ok(G.currentPath(looseEnd).reason === 'unowned', 'an end on a cell with no island is reported',
+  G.currentPath(looseEnd).reason);
+
+const openEnd = JSON.parse(JSON.stringify(chain));
+openEnd.cells[1].flip = false;
+ok(G.currentPath(openEnd).reason === 'open', 'a broken direction makes the path open');
+ok(G.diagnose(openEnd).some(d => d.kind === 'flow' && d.level === 'warn' && /No series path/.test(d.text)),
+  'and the checker warns about it');
+
+/* the assembly map carries both ends and the traced route */
+const chainTop = G.buildSheet(chain, 'top');
+const chainBottom = G.buildSheet(chain, 'bottom');
+const map = G.toPrint(chain, chainTop, chainBottom);
+ok(/PACK -/.test(map) && /PACK \+/.test(map), 'the assembly map marks both pack ends');
+ok(/Dashed red/.test(map), 'and explains the current path');
+
+/* ------------------------------------------------------------------ */
 /* rotate                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -201,7 +403,7 @@ removeCell(cut, victim);
 ok(cut.cells.length === doc.cells.length - 1, 'cell removed from the pack', cut.cells.length + ' left');
 ok(cut.islands.top.every(i => !i.cells.includes(victim)) &&
    cut.islands.bottom.every(i => !i.cells.includes(victim)), 'cell removed from both faces');
-ok(G.diagnose(cut).length === 0, 'no orphan terminal warnings after a clean removal');
+ok(G.diagnose(cut).filter(d => d.level !== 'info').length === 0, 'no orphan terminal warnings after a clean removal');
 const cutTop = G.buildSheet(cut, 'top');
 ok(cutTop.islands.every(i => i.parts === 1), 'remaining islands are still one piece each');
 ok(cutTop.islands.every(i => i.polys.length >= 1), 'remaining islands still have contours');
@@ -218,6 +420,8 @@ const twoPiece = {
 };
 const split = G.buildSheet(twoPiece, 'top');
 ok(split.islands[0].parts === 2, 'an island in two clusters counts as two pieces', split.islands[0].parts + ' parts, ' + split.islands[0].polys.length + ' loops');
+ok(G.diagnose(twoPiece).some(d => d.kind === 'flow' && d.level === 'error'),
+  'the same two clusters are reported as an open current path');
 
 /* ------------------------------------------------------------------ */
 /* weld-line cut                                                       */
@@ -274,6 +478,8 @@ for (const a of [0, 30, 60, 90]) {
   byAngle[a] = Math.round(sh.islands.reduce((s, i) => s + i.area, 0));
   ok(sh.islands.every(i => i.parts === 1 && i.polys.length === 1),
     'the packing directions all give a clean strip', a + ' deg, ' + byAngle[a] + ' mm2');
+  ok(!G.diagnose(d2).some(d => d.level === 'warn' || d.level === 'error'),
+    'and the flow check accepts it', a + ' deg');
 }
 ok(new Set(Object.values(byAngle)).size > 1, 'the angle changes the shape',
   JSON.stringify(byAngle));

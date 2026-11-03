@@ -28,6 +28,10 @@
     cache: { top: new Map(), bottom: new Map() },
     drc: [],
     buildMs: 0,
+    flowOn: true,
+    flowPath: null,
+    terminalPick: null,
+    flowLast: 0,
     dragging: false,
     pan: null,
     paintMode: null,
@@ -288,6 +292,71 @@
   function cellIndex(id) {
     for (var i = 0; i < S.doc.cells.length; i++) if (S.doc.cells[i].id === id) return i;
     return -1;
+  }
+
+  /* Ends are annotations on the document, so they have to survive load, undo
+     and a deleted cell without ever pointing at a pad that is not there. */
+  function pruneTerminals() {
+    var t = S.doc.terminals;
+    if (!t || typeof t !== 'object') {
+      S.doc.terminals = { neg: null, pos: null };
+      return;
+    }
+    var live = Object.create(null);
+    for (var i = 0; i < S.doc.cells.length; i++) live[S.doc.cells[i].id] = 1;
+    ['neg', 'pos'].forEach(function (k) {
+      var e = t[k];
+      if (!e || !live[e.cell] || (e.face !== 'top' && e.face !== 'bottom')) t[k] = null;
+    });
+    if (t.neg && t.pos && t.neg.face === t.pos.face && t.neg.cell === t.pos.cell) {
+      t.neg = t.pos = null;
+    }
+  }
+
+  function termFace(term) {
+    return term && term.face === 'bottom' ? 'bottom' : 'top';
+  }
+
+  function termCellLabel(term) {
+    var n = term ? cellIndex(term.cell) : -1;
+    return n >= 0 ? String(n + 1) : '';
+  }
+
+  function faceShort(face) { return face === 'bottom' ? 'BOT' : 'TOP'; }
+
+  function paintFlowPanel() {
+    var t = S.doc.terminals || (S.doc.terminals = { neg: null, pos: null });
+    var neg = t.neg, pos = t.pos;
+    var negBtn = $('btnTermNeg'), posBtn = $('btnTermPos');
+    negBtn.classList.toggle('on', S.terminalPick === 'neg');
+    posBtn.classList.toggle('on', S.terminalPick === 'pos');
+    negBtn.classList.toggle('set', !!neg);
+    posBtn.classList.toggle('set', !!pos);
+    $('termNegLab').textContent = neg ? faceShort(termFace(neg)) + ' ' + termCellLabel(neg) : 'end';
+    $('termPosLab').textContent = pos ? faceShort(termFace(pos)) + ' ' + termCellLabel(pos) : 'end';
+
+    var flow = S.flowPath;
+    var note = $('flowNote');
+    if (!neg && !pos) {
+      note.innerHTML = 'Pick <b>&minus;</b> or <b>+</b>, then click a pad. The end belongs to that sheet\'s island; both ends may sit on either sheet.';
+    } else if (!neg || !pos) {
+      note.innerHTML = 'One end set. Pick the other one to trace the path through the cells.';
+    } else if (flow && flow.ok) {
+      note.innerHTML = 'Main path: <b>' + flow.cells.length + ' cell' + (flow.cells.length === 1 ? '' : 's') +
+        '</b> from the &minus; end to the + end, <b>' + flow.length.toFixed(0) + ' mm</b> of traced route.';
+    } else if (flow && flow.reason === 'open') {
+      note.innerHTML = 'No directed path from the &minus; end to the + end. Check the flips between them.';
+    } else if (flow && flow.reason === 'same-island') {
+      note.innerHTML = 'Both ends are on the same island &mdash; there are no series cells between them.';
+    } else if (flow && flow.reason === 'unowned') {
+      note.innerHTML = 'An end sits on a pad that is not in an island on its sheet. Paint that cell first.';
+    } else if (flow && flow.reason === 'missing') {
+      note.innerHTML = 'An end points at a cell that is no longer in the pack. Pick it again.';
+    } else if (flow && flow.reason === 'same-cell') {
+      note.innerHTML = 'Both ends are on the same pad. Pick a different pad for one of them.';
+    } else {
+      note.innerHTML = 'Set both ends to trace the main current path.';
+    }
   }
 
   function islandById(face, id) {
@@ -667,6 +736,7 @@
         if (gap < warnAt) {
           out.push({
             level: gap < errAt ? 'error' : 'warn',
+            kind: 'layout',
             text: (face === 'top' ? 'Top' : 'Bottom') + ': ' + list[a].name + ' and ' + list[b].name +
                   ' are ' + gap.toFixed(2) + ' mm apart' +
                   (gap < errAt ? ' - they will cut into each other.' : ' - only a thin web will be left.')
@@ -714,6 +784,8 @@
     S.frame = G.frameOf(S.doc);
     ensureSheet('top');
     ensureSheet('bottom');
+    pruneTerminals();
+    S.flowPath = G.currentPath(S.doc);
     S.drc = G.diagnose(S.doc)
       .concat(gapCheck('top'), gapCheck('bottom'), partsCheck('top'), partsCheck('bottom'));
     /* a full rebuild is exactly what "the sheet already matches these slider
@@ -889,6 +961,10 @@
     /* the guide slits last, over the cell they mark */
     if (sheet) drawSlits(sheet);
 
+    /* the main current path and the pack ends, over the metal and the cells */
+    drawFlow(nowOverride === undefined ? performance.now() : nowOverride);
+    drawEnds();
+
     /* the box being dragged out, over the cells it has already picked */
     if (S.marquee && S.marquee.moved) {
       var mm = S.marquee;
@@ -990,6 +1066,142 @@
     }
   }
 
+  /* ------------------------------------------------------------------ */
+  /* pack ends and current flow                                          */
+  /*
+   * The ends are annotations, not cut geometry: a red/blue ring marks the pad
+   * the main lead lands on, and the two rings name the islands the current
+   * enters and leaves. Between them the route follows the real cell edges and
+   * the real metal graph, and moving dashes show the direction from - to +.
+   * The path is drawn in pack coordinates, so it mirrors with the sheet like
+   * the cells do.
+   */
+  /* ------------------------------------------------------------------ */
+
+  function localPoint(p) {
+    var f = S.frame;
+    return { x: S.face === 'bottom' ? f.W - p.x : p.x, y: p.y };
+  }
+
+  function pathFromPoints(pts) {
+    var path = new Path2D();
+    path.moveTo(pts[0].x, pts[0].y);
+    for (var i = 1; i < pts.length; i++) path.lineTo(pts[i].x, pts[i].y);
+    return path;
+  }
+
+  function pointAlong(pts, t) {
+    var len = [], total = 0, i;
+    for (i = 1; i < pts.length; i++) {
+      var d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+      len.push(d);
+      total += d;
+    }
+    if (!(total > 0)) return { x: pts[0].x, y: pts[0].y, a: 0 };
+    var want = Math.max(0, Math.min(1, t)) * total, run = 0;
+    for (i = 0; i < len.length; i++) {
+      if (run + len[i] >= want || i === len.length - 1) {
+        var f = len[i] > 0 ? (want - run) / len[i] : 0;
+        f = Math.max(0, Math.min(1, f));
+        return {
+          x: pts[i].x + (pts[i + 1].x - pts[i].x) * f,
+          y: pts[i].y + (pts[i + 1].y - pts[i].y) * f,
+          a: Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x)
+        };
+      }
+      run += len[i];
+    }
+    return { x: pts[0].x, y: pts[0].y, a: 0 };
+  }
+
+  function drawFlow(now) {
+    var flow = S.flowPath;
+    if (!S.flowOn || !flow || !flow.ok || flow.points.length < 2) return;
+    var pts = flow.points.map(localPoint);
+    var path = pathFromPoints(pts);
+    var zoom = S.zoom;
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(255,86,86,0.20)';
+    ctx.lineWidth = 7 / zoom;
+    ctx.stroke(path);
+    ctx.strokeStyle = '#ff5a5a';
+    ctx.lineWidth = 2.4 / zoom;
+    var dash = 5.5 / zoom, gap = 6.5 / zoom, cycle = dash + gap;
+    var phase = REDUCED ? 0 : ((now === undefined ? performance.now() : now) * 0.018) % cycle;
+    ctx.setLineDash([dash, gap]);
+    ctx.lineDashOffset = -phase;
+    ctx.stroke(path);
+    ctx.setLineDash([]);
+    var arrow = Math.max(3 / zoom, 1.4);
+    [0.16, 0.5, 0.84].forEach(function (t) {
+      var q = pointAlong(pts, t);
+      ctx.save();
+      ctx.translate(q.x, q.y);
+      ctx.rotate(q.a);
+      ctx.beginPath();
+      ctx.moveTo(arrow, 0);
+      ctx.lineTo(-arrow * 0.8, arrow * 0.62);
+      ctx.lineTo(-arrow * 0.38, 0);
+      ctx.lineTo(-arrow * 0.8, -arrow * 0.62);
+      ctx.closePath();
+      ctx.fillStyle = '#ff5a5a';
+      ctx.fill();
+      ctx.restore();
+    });
+    ctx.restore();
+  }
+
+  function drawEndMark(end, sign, color) {
+    if (!end || !end.cell) return;
+    var f = S.frame;
+    var p = G.cellOnFace(S.doc, f, S.face, end.cell);
+    var r = S.doc.params.cellD / 2;
+    var same = end.face === S.face;
+    var zoom = S.zoom;
+    ctx.save();
+    ctx.globalAlpha = same ? 1 : 0.55;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r + 2.6 / zoom, 0, Math.PI * 2);
+    ctx.fillStyle = hexA(color, 0.12);
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.4 / zoom;
+    if (!same) ctx.setLineDash([3 / zoom, 2.4 / zoom]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    var label = sign === '+' ? 'PACK +' : 'PACK \u2212';
+    var fs = Math.max(6 / zoom, 1.75);
+    ctx.font = '600 ' + fs + 'px "Segoe UI", sans-serif';
+    var tw = ctx.measureText(label).width + 3.2 / zoom;
+    var th = fs * 1.65;
+    var tx = p.x + r * 0.35;
+    var ty = p.y - r - th - 2.2 / zoom;
+    if (ty < 1 / zoom) ty = p.y + r + 2.2 / zoom;
+    ctx.fillStyle = color;
+    if (typeof ctx.roundRect === 'function') {
+      ctx.beginPath();
+      ctx.roundRect(tx, ty, tw, th, th * 0.35);
+      ctx.fill();
+    } else {
+      ctx.fillRect(tx, ty, tw, th);
+    }
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, tx + tw / 2, ty + th / 2 + 0.15);
+    ctx.restore();
+  }
+
+  function drawEnds() {
+    var flow = S.flowPath;
+    if (!flow) return;
+    drawEndMark(flow.neg, '\u2212', '#5aa9ff');
+    drawEndMark(flow.pos, '+', '#ff6b6b');
+  }
+
   function drawPrims(src) {
     var f = S.frame;
     var pts = [];
@@ -1075,23 +1287,74 @@
 
     var checks = $('checks');
     checks.innerHTML = '';
-    var errs = S.drc.filter(function (d) { return d.level === 'error'; });
-    var warns = S.drc.filter(function (d) { return d.level === 'warn'; });
-    if (!S.drc.length) {
-      checks.innerHTML = '<li class="check"><span class="dot" style="background:#7bd88f"></span><span class="ok">Every cell connected on both faces.</span></li>';
+    var rank = { error: 0, warn: 1, info: 2 };
+    var sorted = S.drc.slice().sort(function (a, b) {
+      return (rank[a.level] || 0) - (rank[b.level] || 0);
+    });
+    var errs = sorted.filter(function (d) { return d.level === 'error'; });
+    var warns = sorted.filter(function (d) { return d.level === 'warn'; });
+    var infos = sorted.filter(function (d) { return d.level === 'info'; });
+    var shorts = sorted.filter(function (d) { return d.kind === 'short'; });
+    var elecErr = sorted.filter(function (d) {
+      return d.level === 'error' && (d.kind === 'short' || d.kind === 'net' || d.kind === 'flow');
+    });
+    var elecWarn = sorted.filter(function (d) {
+      return d.level === 'warn' && (d.kind === 'short' || d.kind === 'net' || d.kind === 'flow');
+    });
+    var net = $('sNet');
+    if (shorts.length) {
+      net.textContent = shorts.length + (shorts.length === 1 ? ' short' : ' shorts');
+      net.className = 'bad';
+    } else if (elecErr.length) {
+      net.textContent = elecErr.length + (elecErr.length === 1 ? ' fault' : ' faults');
+      net.className = 'bad';
+    } else if (elecWarn.length) {
+      net.textContent = elecWarn.length + (elecWarn.length === 1 ? ' warning' : ' warnings');
+      net.className = 'warn';
+    } else {
+      net.textContent = 'no shorts';
+      net.className = 'ok';
     }
-    S.drc.slice(0, 14).forEach(function (d) {
+    var t = S.doc.terminals || { neg: null, pos: null };
+    function endLabel(term) {
+      if (!term) return '-';
+      var n = termCellLabel(term);
+      return faceShort(termFace(term)) + ' ' + (n || '?');
+    }
+    $('sEnds').textContent = (t.neg ? '\u2212 ' + endLabel(t.neg) : '\u2212 -') +
+      ' / ' + (t.pos ? '+ ' + endLabel(t.pos) : '+ -');
+    $('sPath').textContent = S.flowPath && S.flowPath.ok
+      ? S.flowPath.cells.length + (S.flowPath.cells.length === 1 ? ' cell' : ' cells')
+      : (t.neg && t.pos ? 'open' : '-');
+    paintFlowPanel();
+    if (!sorted.length) {
+      checks.innerHTML = '<li class="check"><span class="dot" style="background:#7bd88f"></span><span class="ok">No electrical or geometry problems.</span></li>';
+    }
+    var LIMIT = 16;
+    sorted.slice(0, LIMIT).forEach(function (d) {
       var li = document.createElement('li');
       li.className = 'check';
-      li.innerHTML = '<span class="dot" style="background:' + (d.level === 'error' ? '#ef6b6b' : '#ffb74d') + '"></span>' +
-                     '<span class="' + (d.level === 'error' ? 'bad' : 'warn') + '">' + esc(d.text) + '</span>';
+      var col = d.level === 'error' ? '#ef6b6b' : d.level === 'warn' ? '#ffb74d' : '#8b98a9';
+      li.innerHTML = '<span class="dot" style="background:' + col + '"></span>' +
+                     '<span class="' + d.level + '">' + esc(d.text) + '</span>';
       checks.appendChild(li);
     });
+    if (sorted.length > LIMIT) {
+      var more = document.createElement('li');
+      more.className = 'note';
+      more.textContent = (sorted.length - LIMIT) + ' more check(s) - fix these first.';
+      checks.appendChild(more);
+    }
     if (!errs.length && warns.length) {
       var li2 = document.createElement('li');
       li2.className = 'note';
       li2.textContent = warns.length + ' warning(s) - the sheets still export.';
       checks.appendChild(li2);
+    } else if (!errs.length && !warns.length && infos.length) {
+      var li3 = document.createElement('li');
+      li3.className = 'note';
+      li3.textContent = infos.length + ' note(s) - design information, nothing to fix.';
+      checks.appendChild(li3);
     }
     renderRows();
   }
@@ -1218,6 +1481,80 @@
           n + (n === 1 ? ' piece' : ' pieces') + ', dashed');
   }
 
+  function islandAt(face, id) {
+    var list = S.doc.islands[face] || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].cells.indexOf(id) >= 0) return list[i];
+    }
+    return null;
+  }
+
+  function paintCursor() {
+    cv.style.cursor = S.terminalPick ? 'copy' : (S.tool === 'paint' ? 'crosshair' : 'cell');
+  }
+
+  function setTerminalPick(which) {
+    S.terminalPick = S.terminalPick === which ? null : which;
+    paintFlowPanel();
+    paintCursor();
+    S.dirty = true;
+    if (!S.terminalPick) return;
+    toast('Click a pad on the ' + S.face + ' sheet for the ' +
+          (which === 'neg' ? '\u2212' : '+') + ' end');
+  }
+
+  function cancelTerminalPick() {
+    if (!S.terminalPick) return;
+    S.terminalPick = null;
+    paintFlowPanel();
+    paintCursor();
+    S.dirty = true;
+  }
+
+  function placeTerminal(which, cell) {
+    if (!cell) { cancelTerminalPick(); return; }
+    if (!islandAt(S.face, cell.id)) {
+      toast('Cell ' + (cellIndex(cell.id) + 1) + ' is not in an island on the ' + S.face +
+            ' sheet - paint it first');
+      return;
+    }
+    var t = S.doc.terminals || (S.doc.terminals = { neg: null, pos: null });
+    var other = which === 'neg' ? 'pos' : 'neg';
+    if (t[other] && t[other].face === S.face && t[other].cell === cell.id) {
+      toast('The other end is already on that pad');
+      return;
+    }
+    snapshot();
+    t[which] = { face: S.face, cell: cell.id };
+    S.terminalPick = null;
+    paintCursor();
+    S.dirty = true;
+    rebuildAll();
+    toast('Pack ' + (which === 'neg' ? 'negative' : 'positive') + ' end on the ' + S.face +
+          ' sheet, cell ' + (cellIndex(cell.id) + 1));
+  }
+
+  function clearTerminals() {
+    var t = S.doc.terminals || { neg: null, pos: null };
+    if (!t.neg && !t.pos) { toast('No pack ends set'); return; }
+    snapshot();
+    t.neg = t.pos = null;
+    S.terminalPick = null;
+    paintCursor();
+    S.dirty = true;
+    rebuildAll();
+    toast('Pack ends cleared');
+  }
+
+  function setFlow(on) {
+    S.flowOn = !!on;
+    $('flowOn').checked = S.flowOn;
+    S.dirty = true;
+    if (!S.flowOn) { toast('Current flow hidden'); return; }
+    if (!S.flowPath || !S.flowPath.ok) toast('Set both ends to draw the current path');
+    else toast('Current flow shown - dashes run from \u2212 to +');
+  }
+
   function polCounts() {
     var plus = 0;
     for (var i = 0; i < S.doc.cells.length; i++) if (!S.doc.cells[i].flip) plus++;
@@ -1324,6 +1661,15 @@
     }
     var pt = toSheet(ev);
     var c = cellAt(pt);
+
+    /* a pack end is a pad on an island: one click, one end, then disarm */
+    if (S.terminalPick) {
+      if (ev.button !== 0) return;
+      if (c) { placeTerminal(S.terminalPick, c); return; }
+      cancelTerminalPick();
+      toast('Pack end cancelled');
+      return;
+    }
 
     /* remove picks cells; nothing leaves the pack until it is confirmed */
     if (S.tool === 'delete') {
@@ -1453,6 +1799,7 @@
       return;
     }
     if (typing || range) return;
+    if (ev.ctrlKey || ev.metaKey) return;
     if (ev.key === 'f' || ev.key === 'F') {
       if (S.hover) {
         var f0f = frameSig();
@@ -1478,8 +1825,10 @@
         }
       }
     } else if (ev.key === 'Escape') {
-      unpick();
-    } else if (ev.key === 'r' || ev.key === 'R') rotateLayout(true);
+      if (S.terminalPick) cancelTerminalPick();
+      else unpick();
+    } else if (ev.key === 'c' || ev.key === 'C') setFlow(!S.flowOn);
+    else if (ev.key === 'r' || ev.key === 'R') rotateLayout(true);
     else if (ev.key === 't' || ev.key === 'T') setFace('top');
     else if (ev.key === 'b' || ev.key === 'B') setFace('bottom');
     else if (ev.key === 'x' || ev.key === 'X') setGhost(!S.ghost);
@@ -1529,6 +1878,16 @@
     p.lineAngle = isFinite(p.lineAngle) ? Math.max(0, Math.min(90, p.lineAngle)) : 90;
     p.guides = !!p.guides;
     p.guideL = isFinite(p.guideL) ? Math.max(2, Math.min(20, p.guideL)) : 8;
+    if (!doc.terminals || typeof doc.terminals !== 'object') doc.terminals = { neg: null, pos: null };
+    ['neg', 'pos'].forEach(function (k) {
+      var e = doc.terminals[k];
+      if (e && typeof e === 'object' && e.cell !== undefined &&
+          (e.face === 'top' || e.face === 'bottom')) {
+        doc.terminals[k] = { face: e.face, cell: e.cell };
+      } else {
+        doc.terminals[k] = null;
+      }
+    });
     return doc;
   }
 
@@ -1672,10 +2031,11 @@
     S.tool = tool;
     /* a selection belongs to the tool that made it */
     if (tool !== 'delete') { S.pick.clear(); S.marquee = null; S.pickBase = null; }
+    if (S.terminalPick) { S.terminalPick = null; paintFlowPanel(); }
     $('btnToolPaint').classList.toggle('on', tool === 'paint');
     $('btnToolDel').classList.toggle('on', tool === 'delete');
     $('btnToolFlip').classList.toggle('on', tool === 'flip');
-    cv.style.cursor = tool === 'paint' ? 'crosshair' : 'cell';
+    paintCursor();
     $('toolNote').innerHTML = TOOL_NOTES[tool] || TOOL_NOTES.paint;
     selBar();
     S.dirty = true;
@@ -1684,6 +2044,10 @@
   $('btnToolPaint').addEventListener('click', function () { setTool('paint'); });
   $('btnToolDel').addEventListener('click', function () { setTool('delete'); });
   $('btnToolFlip').addEventListener('click', function () { setTool('flip'); });
+  $('btnTermNeg').addEventListener('click', function () { setTerminalPick('neg'); });
+  $('btnTermPos').addEventListener('click', function () { setTerminalPick('pos'); });
+  $('btnTermClear').addEventListener('click', function () { clearTerminals(); });
+  $('flowOn').addEventListener('change', function () { setFlow(this.checked); });
   $('btnSelDel').addEventListener('click', function () { removePicked(); });
   $('btnSelClear').addEventListener('click', function () { unpick(); });
   $('btnRotL').addEventListener('click', function () { rotateLayout(false); });
@@ -2004,6 +2368,7 @@
                 before.ox !== S.frame.ox || before.oy !== S.frame.oy;
     if (!S.ghost || moved) S.sheets[otherFace()] = null;
     ensureSheet(S.face);
+    S.flowPath = G.currentPath(S.doc);
     S.dirty = true;
     SLIDE.last = performance.now();
     /* a big pack traces slower than a small one, so the gap is set from what
@@ -2182,6 +2547,10 @@
   function loop() {
     /* an animation is the only thing that keeps asking for frames */
     if (S.anim.length) S.dirty = true;
+    if (S.flowOn && !REDUCED && S.flowPath && S.flowPath.ok && S.flowPath.points.length > 1) {
+      var now = performance.now();
+      if (now - S.flowLast >= 33) { S.flowLast = now; S.dirty = true; }
+    }
     if (S.dirty) draw();
     requestAnimationFrame(loop);
   }
@@ -2191,5 +2560,5 @@
 
   /* A handle for tests/smoke-app.js and for poking at the state from the
      browser console. The app never reads it back. */
-  window.__ba = { state: S, geo: G, rebuild: rebuildAll, tool: setTool, rows: renderRows, anim: drawAnim, frame: draw, ghost: setGhost, guides: setGuides };
+  window.__ba = { state: S, geo: G, rebuild: rebuildAll, tool: setTool, rows: renderRows, anim: drawAnim, frame: draw, ghost: setGhost, guides: setGuides, flow: setFlow };
 })();

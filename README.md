@@ -24,7 +24,10 @@ It does this:
    face.
 7. **Look through** either sheet at the other one's plate — dashed, and where it
    really lies in the pack — to check both ends of every cell at once.
-8. **Export** the two sheets as 1:1 SVG, DXF, and a printable assembly map.
+8. **Mark the pack ends** — put the negative and positive tabs on any island,
+   on either sheet — then trace and animate the main current path from one to
+   the other.
+9. **Export** the two sheets as 1:1 SVG, DXF, and a printable assembly map.
 
 No installation, no build step, no internet. Double-click `index.html`.
 
@@ -59,6 +62,12 @@ docs/           background: feasibility and architecture notes
      wide, so take the cells around them too when you need real clearance.
    - **Flip** turns a cell over: its + moves to the other face. That is how a
      series chain is built, and the polarity count on the right tracks it.
+   - **Ends** — the **Current** panel below the tools sets the pack's negative
+     and positive tabs. Pick *−* or *+*, then click a pad on the sheet you are
+     looking at. The tab is drawn on that pad and belongs to the island it sits
+     on; both ends may be on either sheet. The panel then traces the main path
+     through the cells and animates it from *−* to *+*. **C** shows or hides the
+     flow, and the assembly map carries the same ends and route.
 3. **Rows** — the list has one line per row with its cell count. **−** and **+**
    take one cell off or add one to that row (hold *Shift* to work on the left
    end instead of the right); **+ row** and **− row** add or drop a whole row.
@@ -259,6 +268,57 @@ toggles the cell you click (**F** does the same under the cursor). *Auto stripe*
 flips alternate bands so every island on the top face has a single terminal
 sign, which makes the bottom islands series junctions.
 
+### Shorts and current paths
+
+The checker reads the pack as a netlist. Each island is a conductor, and each
+cell is a voltage source between the island on its + face and the island on its
+− face, so a cell is a directed edge from one island to the other. Give the
+islands potentials and every cell adds exactly one step: a series chain is a
+straight path, and a parallel group is several edges taking the same step. If a
+loop comes back with a different number of steps than it left with, the loop is
+a short, because cells are wired back into themselves through metal of the wrong
+polarity. This catches the obvious case — one cell turned over inside a parallel
+group, so it shares both islands with its neighbours — and longer loops across
+several islands. It deliberately accepts a mixed-polarity island: on the bottom
+face that is the series junction, and the potential check tells the two apart.
+
+Current also has to have somewhere to go. Each island's metal graph is the same
+graph the shape is built from (every near-neighbour strap on a plate, the
+boustrophedon route on a weld-line strip). The checker reports an island whose
+graph has more than one component as an open current path, and a link much
+longer than one pitch as a weak one. On a plate it also counts single-strap
+necks — places where one strap is the only path — and reports them as notes. A
+weld-line strip is a chain by design, so a very long one is noted instead:
+current from the far cell passes through every band before it reaches the tab,
+which is why short strips share current more evenly.
+
+### Pack ends and the main current path
+
+The **Current** panel answers the other half of the question: where does the
+pack actually deliver its power? Pick *−* or *+*, then click a pad. The end is
+a tab welded at that pad, but electrically it belongs to the **whole island** —
+which is why both ends can sit on the bottom sheet, or one on each, exactly as
+the layout needs. The button keeps the sheet and cell number, and the sheet
+shows a coloured ring plus a `PACK −` / `PACK +` tag. A ring on the sheet you
+are not looking at is dashed, so you can still see the far end.
+
+Once both ends exist, the tool follows the same directed cell edges the short
+checker uses: from the negative end's island, through a cell to its + island,
+through that island's metal to the next cell's − pad, and so on until it reaches
+the positive end. The metal part of every hop is the actual strap graph used to
+draw the piece, so the red route follows the straps on a plate and the routed
+bands on a weld-line strip instead of cutting across a slot. The route is drawn
+as moving red dashes with arrowheads; the dashes run from *−* to *+*, and **C**
+turns the overlay off and on. With reduced motion asked for, the route is drawn
+once with static dashes.
+
+If the cells between the ends do not form a directed chain — a reversed group,
+a gap in the islands, or both ends on the same island — the panel says so and
+the Checks list warns instead of drawing a line that does not exist. The trace
+is a representative series path, not a full circuit solve: it does not split
+current between parallel cells or model resistance, so it shows the route and
+the direction, not the current in each strap.
+
 ### Seeing the other sheet through
 
 The one thing you cannot see while working on a sheet is the other one: which
@@ -296,7 +356,9 @@ photographed once when the pointer goes down and diffed once when it comes up.
 
 Frame pacing is honest: the canvas only redraws while something is moving, and
 `prefers-reduced-motion` turns the whole thing off in favour of the final
-picture.
+picture. The current-flow overlay follows the same rule: it asks for frames only
+while both ends trace a path, is throttled to about 30 fps, and becomes a static
+dashed route when motion is reduced.
 
 ## Cutting notes
 
@@ -328,16 +390,37 @@ picture.
 
 ## Checks
 
-The panel on the right reports:
+The panel on the right reports electrical and fabrication problems. The
+**Electrical** row in *Sheet* says at a glance whether the pack is shorted, and
+the **Ends** and **Path** rows say where the main tabs are and how many cells the
+traced series route visits:
 
+- **a short circuit** — two cells that share both islands but face opposite
+  ways, or a longer loop across several islands whose cell voltages do not add
+  up. Parallel cells pointing the same way are normal and are not reported; a
+  flipped whole group is the series junction, also normal.
 - a terminal with no island on that face (it would stay unwelded),
-- a cell claimed by two islands on one face,
-- two islands too close to each other,
-- an island that has come apart into two or more pieces — deleting a cell can
-  cut a group in half, and you want to hear that before you cut.
+- a cell claimed by two islands on one face, listed twice in one island, or an
+  island pointing at a cell that is not in the pack,
+- an island whose cells are not joined by metal — separate current paths on
+  one piece,
+- two islands too close to each other, and an island that has come apart into
+  two or more pieces,
+- two cells whose cans overlap, a duplicated cell id, or a cell with no valid
+  position,
+- a pad wider than the cell, so the metal reaches past the can,
+- a weld-line band as wide as the gap between bands, so the slots have closed,
+- a single strap spanning much more than one cell pitch — a long, weak current
+  path,
+- a guide slit longer than the pad allows (it is cut at the shorter length),
+- pack ends on the same pad or island, an end on a pad with no island, or no
+  directed series path between the two ends.
 
-Errors are red, warnings amber; both still export, because sometimes you know
-better.
+Errors are red, warnings amber and notes grey. The notes are the current-flow
+detail rather than faults: an island that is a single chain, a plate with a
+single-strap neck where there is no alternate path, or the length of the main
+path between the two pack ends. Errors and warnings still export, because
+sometimes you know better.
 
 ## Development
 
@@ -357,7 +440,14 @@ python tests/preview.py out/preview-lines.json preview-lines
 looked at next to the plate in `out/pack.svg`. It checks the route itself: every
 cell visited once, every step shorter than two pitches, one pad per spot, one
 piece per strip, no field left enclosed, and that each of the packing's
-directions produces a clean strip. A slitted pair is written beside it —
+directions produces a clean strip. It builds the electrical netlist too: a
+reversed cell inside a parallel group is a short, a whole flipped group is a
+series junction, two clusters are an open current path, overlapping cans and a
+pad wider than the cell are caught, and a weld-line strap as wide as the band
+spacing closes the slots. The pack ends are tested from both sides: a chain that
+starts and ends on the bottom sheet traces every series cell in order, the metal
+route is carried, a missing cell or island is reported, and a broken direction
+opens the path. A slitted pair is written beside it —
 `out/pack-guides.svg` — and the slits are checked the same way: one per spot,
 inside the pad, out of the metal area, mirrored with the bottom sheet, carried
 by both writers, and free of a re-trace when they are switched on.
@@ -407,8 +497,16 @@ is millimetres.
   slit per pad, always shorter than the pad, and no way to place a mark anywhere
   but the cell centre.
 - Removing cells makes a plain gap, not a shaped cutout.
+- The pack ends are annotations, not extra tabs in the cut file: they mark the
+  pad and the island the main lead belongs to, and appear on screen and in the
+  assembly map. The red route is one representative series path between those
+  ends, not a current-sharing or resistance solve, so it does not show how much
+  current each parallel cell carries.
 - The animation is decoration: it never changes the geometry, and with
   reduced-motion turned on you get the same result without it.
 - DRC is deliberately shallow: it checks the things that actually ruin a pack
-  (unwelded terminal, double-claimed cell, islands cutting into each other, a
-  piece that has come apart), not current capacity or thermal behaviour.
+  (unwelded terminal, double-claimed cell, redundant or missing series path,
+  overlapping cans, islands cutting into each other, a piece that has come
+  apart, a closed weld-line slot, a single-strap neck), not current capacity,
+  fuse sizing or thermal behaviour. It assumes all cells are the same type and
+  voltage, which is the one type the grid generator places.

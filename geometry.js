@@ -12,6 +12,11 @@
  * squares) and then simplified, which gives clean polylines for DXF/SVG.
  * Kerf compensation is applied by inflating every primitive by kerf/2 before
  * contouring, which is exactly a Minkowski offset of the union outward.
+ *
+ * diagnose() checks the electrical netlist (shorts, unwelded terminals) and
+ * the current path of every island before anything is cut. currentPath()
+ * traces the main route between the two pack ends through real cell edges and
+ * the same metal graph the shape is built from.
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -186,10 +191,10 @@
    */
   /* ------------------------------------------------------------------ */
 
-  function weldOrder(pts, angleDeg, pitch) {
+  /* Split the cells into bands across the direction the metal runs. */
+  function weldBands(pts, angleDeg, pitch) {
     var n = pts.length;
     var i;
-    if (n < 2) return n ? [0] : [];
     var a = (angleDeg || 0) * Math.PI / 180;
     var ca = Math.cos(a), sa = Math.sin(a);
     var u = new Array(n), v = new Array(n);
@@ -204,25 +209,14 @@
     /* 0.45 of the pitch: the tolerance the app already uses to call cells a
        row, so a band here means the same thing as a row there */
     var tol = Math.max(1.5, (pitch || 20) * 0.45);
-    var out = [];
+    var bands = [];
     var band = [];
-    var prev = v[byV[0]];
-    var tail = -1;
-
-    function dist2(p, q) {
-      var dx = pts[p].x - pts[q].x, dy = pts[p].y - pts[q].y;
-      return dx * dx + dy * dy;
-    }
+    var prev = n ? v[byV[0]] : 0;
 
     function flush() {
       if (!band.length) return;
       band.sort(function (p, q) { return u[p] - u[q]; });
-      /* walk each band from the end nearest the free end of the strip, which
-         is what makes the route a boustrophedon on a lattice and keeps the
-         step into a short band short when the bands are not the same length */
-      if (tail >= 0 && dist2(tail, band[0]) > dist2(tail, band[band.length - 1])) band.reverse();
-      for (var b = 0; b < band.length; b++) out.push(band[b]);
-      tail = band[band.length - 1];
+      bands.push(band);
       band = [];
     }
 
@@ -233,7 +227,70 @@
       prev = v[j];
     }
     flush();
+    return { bands: bands, u: u, v: v };
+  }
+
+  function weldOrder(pts, angleDeg, pitch) {
+    var n = pts.length;
+    if (n < 2) return n ? [0] : [];
+    var info = weldBands(pts, angleDeg, pitch);
+    var out = [];
+    var tail = -1;
+
+    function dist2(p, q) {
+      var dx = pts[p].x - pts[q].x, dy = pts[p].y - pts[q].y;
+      return dx * dx + dy * dy;
+    }
+
+    for (var bi = 0; bi < info.bands.length; bi++) {
+      var band = info.bands[bi];
+      /* walk each band from the end nearest the free end of the strip, which
+         is what makes the route a boustrophedon on a lattice and keeps the
+         step into a short band short when the bands are not the same length */
+      if (tail >= 0 && dist2(tail, band[0]) > dist2(tail, band[band.length - 1])) {
+        band = band.slice().reverse();
+      }
+      for (var b = 0; b < band.length; b++) out.push(band[b]);
+      tail = band[band.length - 1];
+    }
     return out;
+  }
+
+  /* Distance between the centre lines of two neighbouring bands. The bands
+     are the metal, so if the strap is wider than this the slots between them
+     close up and the routed strip becomes a plate with an odd outline. */
+  function bandGap(pts, angleDeg, pitch) {
+    var info = weldBands(pts, angleDeg, pitch);
+    if (info.bands.length < 2) return Infinity;
+    var means = [];
+    for (var b = 0; b < info.bands.length; b++) {
+      var band = info.bands[b], sum = 0;
+      for (var i = 0; i < band.length; i++) sum += info.v[band[i]];
+      means.push(sum / band.length);
+    }
+    means.sort(function (a, c) { return a - c; });
+    var best = Infinity;
+    for (var k = 1; k < means.length; k++) {
+      var d = means[k] - means[k - 1];
+      if (d > 1e-6 && d < best) best = d;
+    }
+    return best;
+  }
+
+  /* Which pairs of cells the metal actually joins on an island. Kept separate
+     from islandPrimitives() so the checks and the drawing cannot disagree
+     about the current path. */
+  function islandEdges(pts, params) {
+    var i;
+    if (params.cut === 'lines') {
+      /* one band from weld spot to weld spot; the pads stay, so the strip is
+         still wide where the welder actually lands */
+      var order = weldOrder(pts, params.lineAngle || 0, params.pitch);
+      var seg = [];
+      for (i = 1; i < order.length; i++) seg.push([order[i - 1], order[i]]);
+      return seg;
+    }
+    return neighbourPairs(pts);
   }
 
   function islandPrimitives(pts, params) {
@@ -245,16 +302,7 @@
     for (i = 0; i < pts.length; i++) {
       prims.push(prim(pts[i].x, pts[i].y, pts[i].x, pts[i].y, rPad));
     }
-    var seg;
-    if (params.cut === 'lines') {
-      /* one band from weld spot to weld spot; the pads stay, so the strip is
-         still wide where the welder actually lands */
-      var order = weldOrder(pts, params.lineAngle || 0, params.pitch);
-      seg = [];
-      for (i = 1; i < order.length; i++) seg.push([order[i - 1], order[i]]);
-    } else {
-      seg = neighbourPairs(pts);
-    }
+    var seg = islandEdges(pts, params);
     for (var k = 0; k < seg.length; k++) {
       var a = pts[seg[k][0]], b = pts[seg[k][1]];
       prims.push(prim(a.x, a.y, b.x, b.y, rStrap));
@@ -899,29 +947,683 @@
     return Math.sqrt(best);
   }
 
-  function diagnose(doc) {
+  /* ------------------------------------------------------------------ */
+  /* electrical nets                                                     */
+  /*
+   * A cell is a voltage source between the island that owns its + terminal
+   * and the island that owns its - terminal. Draw each cell as a directed
+   * edge, minus island -> plus island, and give every island node an integer
+   * potential: one cell adds exactly one step. In a sound pack those steps
+   * are consistent - a series chain is a path, a parallel group is several
+   * edges that take the same step. If a loop adds up to something other than
+   * zero the loop is a short: cells are connected back to themselves through
+   * metal of the wrong polarity. That catches the direct case (two cells
+   * sharing both sheets but facing opposite ways) as well as a longer loop
+   * across several islands. Parallel cells in the same direction are fine;
+   * they are the normal way a pack is built.
+   */
+  /* ------------------------------------------------------------------ */
+
+  function nodeName(face, id) { return face + ':' + id; }
+
+  function shortCheck(doc, owner) {
     var out = [];
-    var faces = ['top', 'bottom'];
-    for (var f = 0; f < 2; f++) {
-      var face = faces[f];
-      var owner = Object.create(null);
-      var list = doc.islands[face] || [];
-      for (var i = 0; i < list.length; i++) {
-        for (var j = 0; j < list[i].cells.length; j++) {
-          var id = list[i].cells[j];
-          if (owner[id] !== undefined) {
-            out.push({ level: 'error', face: face, text: 'Cell ' + id + ' is in two islands on the ' + face + '.' });
-          }
-          owner[id] = list[i].id;
-        }
+    var edges = [];
+    var seen = Object.create(null);
+    var i, c;
+    for (i = 0; i < doc.cells.length; i++) {
+      c = doc.cells[i];
+      if (!c || c.id === undefined || seen[c.id]) continue;
+      seen[c.id] = 1;
+      var top = owner.top[c.id], bottom = owner.bottom[c.id];
+      if (top === undefined || bottom === undefined) continue;
+      var plusFace = c.flip ? 'bottom' : 'top';
+      var plusId = plusFace === 'top' ? top : bottom;
+      var minusFace = plusFace === 'top' ? 'bottom' : 'top';
+      var minusId = minusFace === 'top' ? top : bottom;
+      edges.push({
+        cell: c.id,
+        from: nodeName(minusFace, minusId),
+        to: nodeName(plusFace, plusId)
+      });
+    }
+    if (!edges.length) return out;
+
+    /* Adjacent nodes, both ways: two cells between the same pair of islands
+       are parallel when they point the same way and a dead short when they
+       point opposite ways. */
+    var pairs = Object.create(null);
+    for (i = 0; i < edges.length; i++) {
+      var e = edges[i];
+      var lo = e.from < e.to ? e.from : e.to;
+      var hi = e.from < e.to ? e.to : e.from;
+      var key = lo + '|' + hi;
+      var rec = pairs[key];
+      if (!rec) rec = pairs[key] = { lo: lo, hi: hi, a: null, b: null };
+      if (e.from === lo) { if (!rec.a) rec.a = e; } else if (!rec.b) rec.b = e;
+    }
+    var reported = Object.create(null);
+    for (var pk in pairs) {
+      var pr = pairs[pk];
+      if (pr.a && pr.b) {
+        reported[pk] = 1;
+        out.push({
+          level: 'error', kind: 'short', face: 'both',
+          text: 'Short circuit: cells ' + pr.a.cell + ' and ' + pr.b.cell +
+                ' share both sheets but face opposite ways.'
+        });
       }
-      for (var c = 0; c < doc.cells.length; c++) {
-        if (owner[doc.cells[c].id] === undefined) {
-          out.push({ level: 'warn', face: face, text: 'Terminal ' + doc.cells[c].id + ' is not connected on the ' + face + '.' });
+    }
+
+    var inc = Object.create(null);
+    function addInc(n, e) { (inc[n] || (inc[n] = [])).push(e); }
+    for (i = 0; i < edges.length; i++) { addInc(edges[i].from, edges[i]); addInc(edges[i].to, edges[i]); }
+
+    var pot = Object.create(null), parent = Object.create(null), parentCell = Object.create(null);
+    var nodes = Object.keys(inc);
+    for (var s = 0; s < nodes.length; s++) {
+      var start = nodes[s];
+      if (pot[start] !== undefined) continue;
+      pot[start] = 0;
+      parent[start] = null;
+      var queue = [start], qi = 0, bad = false;
+      while (qi < queue.length) {
+        var u = queue[qi++];
+        var list = inc[u];
+        for (var k = 0; k < list.length; k++) {
+          var edge = list[k];
+          var v = edge.from === u ? edge.to : edge.from;
+          var want = edge.from === u ? pot[u] + 1 : pot[u] - 1;
+          if (pot[v] === undefined) {
+            pot[v] = want;
+            parent[v] = u;
+            parentCell[v] = edge.cell;
+            queue.push(v);
+          } else if (pot[v] !== want && !bad) {
+            var lo2 = u < v ? u : v, hi2 = u < v ? v : u;
+            if (reported[lo2 + '|' + hi2]) continue;
+            /* walk both ends of the conflicting edge back to their common
+               ancestor; that path plus the edge is the offending loop */
+            var anc = Object.create(null);
+            for (var n = u; n !== null && n !== undefined; n = parent[n]) anc[n] = 1;
+            var lca = v;
+            while (lca !== undefined && lca !== null && !anc[lca]) lca = parent[lca];
+            var cyc = [edge.cell];
+            for (n = u; lca !== undefined && n !== lca && n !== null; n = parent[n]) {
+              if (parentCell[n]) cyc.push(parentCell[n]);
+            }
+            for (n = v; lca !== undefined && n !== lca && n !== null; n = parent[n]) {
+              if (parentCell[n]) cyc.push(parentCell[n]);
+            }
+            var uniq = [];
+            for (var q = 0; q < cyc.length; q++) {
+              if (uniq.indexOf(cyc[q]) < 0) uniq.push(cyc[q]);
+            }
+            var shown = uniq.slice(0, 4).join(', ');
+            if (uniq.length > 4) shown += ' and ' + (uniq.length - 4) + ' more';
+            out.push({
+              level: 'error', kind: 'short', face: 'both',
+              text: 'Short circuit: cells ' + shown +
+                    ' form a closed loop whose cell voltages do not cancel.'
+            });
+            bad = true;
+          }
         }
       }
     }
     return out;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* current flow                                                       */
+  /* ------------------------------------------------------------------ */
+
+  function componentCount(n, seg) {
+    var par = new Array(n);
+    for (var i = 0; i < n; i++) par[i] = i;
+    function find(a) { while (par[a] !== a) { par[a] = par[par[a]]; a = par[a]; } return a; }
+    for (var k = 0; k < seg.length; k++) {
+      var ra = find(seg[k][0]), rb = find(seg[k][1]);
+      if (ra !== rb) par[ra] = rb;
+    }
+    var count = 0;
+    for (var j = 0; j < n; j++) if (find(j) === j) count++;
+    return count;
+  }
+
+  /* Number of links that are the only metal joining two parts of an island.
+     Leaves are ignored: an end cell always has one strap and that is just the
+     end of the strip, not a weak point for the rest of the sheet. */
+  function singleStrapNecks(n, seg) {
+    var adj = [], i;
+    for (i = 0; i < n; i++) adj.push([]);
+    for (i = 0; i < seg.length; i++) {
+      adj[seg[i][0]].push(seg[i][1]);
+      adj[seg[i][1]].push(seg[i][0]);
+    }
+    var disc = new Array(n), low = new Array(n), parent = new Array(n);
+    for (i = 0; i < n; i++) { disc[i] = -1; parent[i] = -1; }
+    var timer = 0, necks = 0;
+    function dfs(u) {
+      disc[u] = low[u] = timer++;
+      for (var k = 0; k < adj[u].length; k++) {
+        var v = adj[u][k];
+        if (disc[v] === -1) {
+          parent[v] = u;
+          dfs(v);
+          if (low[v] < low[u]) low[u] = low[v];
+          if (low[v] > disc[u] && adj[u].length > 1 && adj[v].length > 1) necks++;
+        } else if (v !== parent[u]) {
+          if (disc[v] < low[u]) low[u] = disc[v];
+        }
+      }
+    }
+    for (i = 0; i < n; i++) if (disc[i] === -1) dfs(i);
+    return necks;
+  }
+
+  function currentCheck(doc, params, byId) {
+    var out = [];
+    var frame = frameOf(doc);
+    var pitch = params.pitch || ((params.cellD || 21.2) + (params.gap || 0));
+    var narrowestBand = Infinity;
+    var faces = ['top', 'bottom'];
+    for (var f = 0; f < 2; f++) {
+      var face = faces[f];
+      var label = face === 'top' ? 'Top' : 'Bottom';
+      var pos = Object.create(null);
+      var seen = Object.create(null);
+      for (var c = 0; c < doc.cells.length; c++) {
+        var cell = doc.cells[c];
+        if (!cell || cell.id === undefined || seen[cell.id] || !byId[cell.id]) continue;
+        seen[cell.id] = 1;
+        pos[cell.id] = cellOnFace(doc, frame, face, cell);
+      }
+      var list = doc.islands[face] || [];
+      for (var i = 0; i < list.length; i++) {
+        var isl = list[i];
+        var pts = [], ids = [];
+        var got = Object.create(null);
+        for (var j = 0; j < isl.cells.length; j++) {
+          var id = isl.cells[j];
+          if (got[id] || !pos[id]) continue;
+          got[id] = 1;
+          pts.push(pos[id]);
+          ids.push(id);
+        }
+        if (pts.length < 2) continue;
+        var seg = islandEdges(pts, params);
+        var comps = componentCount(pts.length, seg);
+        if (comps > 1) {
+          out.push({
+            level: 'error', kind: 'flow', face: face,
+            text: label + ': ' + (isl.name || isl.id) + ' has ' + comps +
+                  ' separate current paths - its cells are not joined by metal.'
+          });
+        }
+
+        /* One very long link is a thin bar rather than a strap: it heats, it
+           flexes, and it is the first thing to fail. */
+        var worst = 0, wa = -1, wb = -1;
+        for (var s = 0; s < seg.length; s++) {
+          var a = pts[seg[s][0]], b = pts[seg[s][1]];
+          var dx = a.x - b.x, dy = a.y - b.y;
+          var d = Math.sqrt(dx * dx + dy * dy);
+          if (d > worst) { worst = d; wa = seg[s][0]; wb = seg[s][1]; }
+        }
+        if (worst > pitch * 1.9) {
+          out.push({
+            level: 'warn', kind: 'flow', face: face,
+            text: label + ': cells ' + ids[wa] + ' and ' + ids[wb] + ' are ' +
+                  worst.toFixed(1) + ' mm apart but joined by one strap - a long, weak current path.'
+          });
+        }
+
+        if (params.cut === 'lines') {
+          var gap = bandGap(pts, params.lineAngle || 0, pitch);
+          if (isFinite(gap) && gap < narrowestBand) narrowestBand = gap;
+          if (pts.length >= 24) {
+            out.push({
+              level: 'info', kind: 'flow', face: face,
+              text: label + ': ' + (isl.name || isl.id) + ' is a single chain of ' + pts.length +
+                    ' cells - current passes through every band before the tab, so it shares unevenly.'
+            });
+          }
+        } else {
+          var necks = singleStrapNecks(pts.length, seg);
+          if (necks > 0) {
+            out.push({
+              level: 'info', kind: 'flow', face: face,
+              text: label + ': ' + (isl.name || isl.id) + ' has ' + necks +
+                    ' single-strap link' + (necks === 1 ? '' : 's') + ' - no alternate current path.'
+            });
+          }
+        }
+      }
+    }
+    if (isFinite(narrowestBand) && narrowestBand < pitch * 2 &&
+        (params.bridgeW || 0) + (params.kerf || 0) > narrowestBand + 1e-6) {
+      out.push({
+        level: 'warn', kind: 'flow', face: 'both',
+        text: 'The weld-line bands are only ' + narrowestBand.toFixed(1) +
+              ' mm apart and Strap W is ' + (params.bridgeW || 0) +
+              ' mm - the slots between them have closed. Use a narrower strap or another Angle.'
+      });
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* pack ends and the main current path                                 */
+  /*
+   * A pack end is a named place on one island, not a polarity of one cell:
+   * the tab is welded to the pad at the cell you pick, but electrically it
+   * belongs to that whole island. That is why both ends may sit on the same
+   * sheet - the series chain can leave one bottom island, cross the top and
+   * come back to another bottom island.
+   *
+   * currentPath() follows the cell edges (minus island -> plus island) from
+   * the negative end to the positive end. The metal route inside every island
+   * it passes through comes from exactly the graph the shape is built from, so
+   * the red line lies on straps that exist rather than on a straight guess.
+   */
+  /* ------------------------------------------------------------------ */
+
+  function ownerMap(doc) {
+    var byId = Object.create(null), seen = Object.create(null);
+    var i, f, k, j;
+    for (i = 0; i < doc.cells.length; i++) {
+      var c = doc.cells[i];
+      if (!c || c.id === undefined || seen[c.id]) continue;
+      seen[c.id] = 1;
+      byId[c.id] = c;
+    }
+    var owner = { top: Object.create(null), bottom: Object.create(null) };
+    var faces = ['top', 'bottom'];
+    for (f = 0; f < 2; f++) {
+      var list = (doc.islands && doc.islands[faces[f]]) || [];
+      for (k = 0; k < list.length; k++) {
+        var isl = list[k];
+        var ids = isl.cells || [];
+        for (j = 0; j < ids.length; j++) {
+          if (byId[ids[j]] && owner[faces[f]][ids[j]] === undefined) {
+            owner[faces[f]][ids[j]] = isl.id;
+          }
+        }
+      }
+    }
+    return { byId: byId, owner: owner };
+  }
+
+  function splitNode(node) {
+    var at = node.indexOf(':');
+    return { face: node.slice(0, at), island: node.slice(at + 1) };
+  }
+
+  function physicalPoint(doc, frame, cell) {
+    return { x: cell.x + frame.ox, y: cell.y + frame.oy };
+  }
+
+  /* Shortest route between two pads along the metal graph of one island. */
+  function metalRoute(doc, frame, net, face, islandId, fromId, toId, params) {
+    var list = (doc.islands && doc.islands[face]) || [];
+    var isl = null;
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i].id) === String(islandId)) { isl = list[i]; break; }
+    }
+    if (!isl) return [fromId, toId];
+    var ids = [], pts = [], seen = Object.create(null);
+    for (var j = 0; j < isl.cells.length; j++) {
+      var id = isl.cells[j];
+      if (seen[id] || !net.byId[id]) continue;
+      seen[id] = 1;
+      ids.push(id);
+      pts.push(cellOnFace(doc, frame, face, net.byId[id]));
+    }
+    var fi = ids.indexOf(fromId), ti = ids.indexOf(toId);
+    if (fi < 0 || ti < 0) return [fromId, toId];
+    if (fi === ti) return [fromId];
+    var seg = islandEdges(pts, params || {});
+    var adj = [];
+    for (var a = 0; a < ids.length; a++) adj.push([]);
+    for (var s = 0; s < seg.length; s++) {
+      adj[seg[s][0]].push(seg[s][1]);
+      adj[seg[s][1]].push(seg[s][0]);
+    }
+    var prev = new Array(ids.length), q = [fi], qi = 0;
+    for (var p = 0; p < ids.length; p++) prev[p] = -1;
+    prev[fi] = fi;
+    while (qi < q.length && prev[ti] < 0) {
+      var u = q[qi++];
+      for (var v = 0; v < adj[u].length; v++) {
+        var w = adj[u][v];
+        if (prev[w] >= 0) continue;
+        prev[w] = u;
+        q.push(w);
+      }
+    }
+    if (prev[ti] < 0) return [fromId, toId];
+    var order = [];
+    for (var at = ti; at !== fi; at = prev[at]) order.push(ids[at]);
+    order.push(ids[fi]);
+    order.reverse();
+    return order;
+  }
+
+  function currentPath(doc, net) {
+    var out = {
+      ok: false, reason: 'none', neg: null, pos: null,
+      cells: [], steps: [], spans: [], points: [], length: 0
+    };
+    var t = doc.terminals || { neg: null, pos: null };
+    var wantNeg = !!(t.neg && t.neg.cell !== undefined && t.neg.cell !== null);
+    var wantPos = !!(t.pos && t.pos.cell !== undefined && t.pos.cell !== null);
+    if (!wantNeg && !wantPos) return out;
+    net = net || ownerMap(doc);
+    var frame = frameOf(doc);
+
+    function info(term) {
+      var face = term.face === 'bottom' ? 'bottom' : 'top';
+      var rec = { cellId: term.cell, face: face, cell: net.byId[term.cell] || null };
+      if (!rec.cell) { rec.bad = 'missing'; return rec; }
+      var isl = net.owner[face][term.cell];
+      if (isl === undefined) { rec.bad = 'unowned'; return rec; }
+      rec.island = isl;
+      rec.node = nodeName(face, isl);
+      var at = physicalPoint(doc, frame, rec.cell);
+      rec.x = at.x; rec.y = at.y;
+      return rec;
+    }
+
+    out.neg = wantNeg ? info(t.neg) : null;
+    out.pos = wantPos ? info(t.pos) : null;
+    if (!wantNeg || !wantPos) { out.reason = 'partial'; return out; }
+    if (out.neg.bad || out.pos.bad) { out.reason = out.neg.bad || out.pos.bad; return out; }
+    if (out.neg.face === out.pos.face && out.neg.cellId === out.pos.cellId) {
+      out.reason = 'same-cell'; return out;
+    }
+    if (out.neg.node === out.pos.node) { out.reason = 'same-island'; return out; }
+
+    var edges = [], i, seenCell = Object.create(null);
+    for (i = 0; i < doc.cells.length; i++) {
+      var c = doc.cells[i];
+      if (!c || c.id === undefined || seenCell[c.id] || !net.byId[c.id]) continue;
+      seenCell[c.id] = 1;
+      var top = net.owner.top[c.id], bottom = net.owner.bottom[c.id];
+      if (top === undefined || bottom === undefined) continue;
+      var plusFace = c.flip ? 'bottom' : 'top';
+      var plusId = plusFace === 'top' ? top : bottom;
+      var minusFace = plusFace === 'top' ? 'bottom' : 'top';
+      var minusId = minusFace === 'top' ? top : bottom;
+      edges.push({
+        cell: c.id,
+        from: nodeName(minusFace, minusId),
+        to: nodeName(plusFace, plusId)
+      });
+    }
+    if (!edges.length) { out.reason = 'open'; return out; }
+
+    var inc = Object.create(null);
+    function addInc(n, e) { (inc[n] || (inc[n] = [])).push(e); }
+    for (i = 0; i < edges.length; i++) { addInc(edges[i].from, edges[i]); addInc(edges[i].to, edges[i]); }
+
+    var start = out.neg.node, end = out.pos.node;
+    var prev = Object.create(null), prevEdge = Object.create(null);
+    prev[start] = null;
+    var queue = [start], qi = 0, found = false;
+    while (qi < queue.length && !found) {
+      var u = queue[qi++];
+      var list = inc[u] || [];
+      for (var k = 0; k < list.length; k++) {
+        var e = list[k];
+        if (e.from !== u) continue;
+        var v = e.to;
+        if (prev[v] !== undefined) continue;
+        prev[v] = u;
+        prevEdge[v] = e;
+        if (v === end) { found = true; break; }
+        queue.push(v);
+      }
+    }
+    if (!found) { out.reason = 'open'; return out; }
+
+    var steps = [];
+    for (var n = end; n !== start; n = prev[n]) {
+      if (!prevEdge[n]) { out.reason = 'open'; return out; }
+      steps.push(prevEdge[n]);
+    }
+    steps.reverse();
+    out.steps = steps;
+    out.cells = steps.map(function (e) { return e.cell; });
+
+    var params = doc.params || {};
+    function pushSpan(face, island, route) {
+      if (route.length < 2) return;
+      var pts = [];
+      for (var r = 0; r < route.length; r++) {
+        var rc = net.byId[route[r]];
+        if (rc) pts.push(physicalPoint(doc, frame, rc));
+      }
+      out.spans.push({ face: face, island: island, cells: route, points: pts });
+    }
+
+    /* the tab can sit on a different pad of the end island than the last cell
+       of the chain, so join it to the metal route as well */
+    pushSpan(out.neg.face, out.neg.island,
+      metalRoute(doc, frame, net, out.neg.face, out.neg.island,
+                 out.neg.cellId, steps[0].cell, params));
+    for (i = 0; i + 1 < steps.length; i++) {
+      var shared = splitNode(steps[i].to);
+      pushSpan(shared.face, shared.island,
+        metalRoute(doc, frame, net, shared.face, shared.island,
+                   steps[i].cell, steps[i + 1].cell, params));
+    }
+    pushSpan(out.pos.face, out.pos.island,
+      metalRoute(doc, frame, net, out.pos.face, out.pos.island,
+                 steps[steps.length - 1].cell, out.pos.cellId, params));
+
+    var points = [];
+    for (i = 0; i < out.spans.length; i++) {
+      var sp = out.spans[i].points;
+      if (!sp.length) continue;
+      points = points.length ? points.concat(sp.slice(1)) : sp.slice();
+    }
+    if (!points.length && out.cells.length) {
+      var only = net.byId[out.cells[0]];
+      if (only) points.push(physicalPoint(doc, frame, only));
+    }
+    out.points = points;
+    for (i = 1; i < points.length; i++) {
+      out.length += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    }
+    out.ok = true;
+    out.reason = 'ok';
+    return out;
+  }
+
+  function terminalCheck(doc, net) {
+    var p = currentPath(doc, net);
+    if (p.reason === 'none') return [];
+    var out = [];
+    var neg = p.neg, pos = p.pos;
+    function side(t) { return t && t.face === 'bottom' ? 'bottom' : 'top'; }
+    if (p.reason === 'partial') {
+      var which = neg ? '\u2212' : '+';
+      out.push({
+        level: 'info', kind: 'flow',
+        text: 'Only the ' + which + ' pack end is set - choose the other one to trace the main current path.'
+      });
+    } else if (p.reason === 'missing') {
+      var bad = neg && neg.bad ? neg : pos;
+      out.push({
+        level: 'warn', kind: 'net',
+        text: 'A pack end points at cell ' + bad.cellId + ', which is no longer in the pack.'
+      });
+    } else if (p.reason === 'unowned') {
+      var loose = neg && neg.bad ? neg : pos;
+      out.push({
+        level: 'warn', kind: 'net',
+        text: 'The ' + (loose === neg ? '\u2212' : '+') + ' pack end is on cell ' + loose.cellId +
+              ', but that cell is not in an island on the ' + side(loose) + ' sheet.'
+      });
+    } else if (p.reason === 'same-cell') {
+      out.push({
+        level: 'warn', kind: 'net',
+        text: 'Both pack ends sit on the same pad (' + side(neg) + ' cell ' + neg.cellId + ').'
+      });
+    } else if (p.reason === 'same-island') {
+      out.push({
+        level: 'warn', kind: 'flow',
+        text: 'Both pack ends are on island ' + neg.island + ' - there are no series cells between them.'
+      });
+    } else if (p.reason === 'open') {
+      out.push({
+        level: 'warn', kind: 'flow',
+        text: 'No series path from the \u2212 end to the + end - check the cell flips between them.'
+      });
+    } else if (p.ok) {
+      out.push({
+        level: 'info', kind: 'flow',
+        text: 'Main current path: ' + p.cells.length + ' cell' + (p.cells.length === 1 ? '' : 's') +
+              ' from the \u2212 end to the + end, ' + p.length.toFixed(0) + ' mm of traced route.'
+      });
+    }
+    return out;
+  }
+
+  function diagnose(doc) {
+    var out = [];
+    var params = doc.params || {};
+    var cells = doc.cells || [];
+    var byId = Object.create(null);
+    var seen = Object.create(null);
+    var i, j;
+
+    for (i = 0; i < cells.length; i++) {
+      var c = cells[i];
+      if (!c || c.id === undefined) {
+        out.push({ level: 'error', kind: 'data', text: 'A cell has no id.' });
+        continue;
+      }
+      if (seen[c.id]) {
+        out.push({ level: 'error', kind: 'data', text: 'Cell id ' + c.id + ' is used twice.' });
+        continue;
+      }
+      seen[c.id] = 1;
+      byId[c.id] = c;
+      if (!isFinite(c.x) || !isFinite(c.y)) {
+        out.push({ level: 'error', kind: 'data', text: 'Cell ' + c.id + ' has no valid position.' });
+      }
+    }
+
+    /* two cans cannot occupy the same space */
+    var cellD = params.cellD || 21.2;
+    var ids = Object.keys(byId);
+    for (i = 0; i < ids.length; i++) {
+      for (j = i + 1; j < ids.length; j++) {
+        var ca = byId[ids[i]], cb = byId[ids[j]];
+        if (!isFinite(ca.x) || !isFinite(ca.y) || !isFinite(cb.x) || !isFinite(cb.y)) continue;
+        var ddx = ca.x - cb.x, ddy = ca.y - cb.y;
+        if (ddx * ddx + ddy * ddy < cellD * cellD - 1e-6) {
+          out.push({
+            level: 'error', kind: 'data',
+            text: 'Cells ' + ids[i] + ' and ' + ids[j] + ' overlap - their can centres are closer than ' +
+                  cellD.toFixed(1) + ' mm.'
+          });
+        }
+      }
+    }
+
+    if ((params.padD || 0) > cellD) {
+      out.push({
+        level: 'warn', kind: 'data',
+        text: 'Pad D is ' + params.padD + ' mm but the cells are ' + cellD.toFixed(1) +
+              ' mm across - the pad reaches past the can onto its neighbour.'
+      });
+    }
+
+    if (params.guides) {
+      var want = params.guideL > 0 ? params.guideL : (params.padD || 18) * 0.45;
+      var max = guideMaxLen(params);
+      if (want > max + 1e-6) {
+        out.push({
+          level: 'warn', kind: 'data',
+          text: 'Guide L is ' + want.toFixed(1) + ' mm but this pad only allows ' + max.toFixed(1) +
+                ' mm - the slit is cut at the shorter length.'
+        });
+      } else if (want <= GUIDE_W) {
+        out.push({
+          level: 'warn', kind: 'data',
+          text: 'Guide L is too short to leave a cut (' + GUIDE_W + ' mm wide) - no slit will be made.'
+        });
+      }
+    }
+
+    var owner = { top: Object.create(null), bottom: Object.create(null) };
+    var faces = ['top', 'bottom'];
+    for (var f = 0; f < 2; f++) {
+      var face = faces[f];
+      var list = doc.islands[face] || [];
+      var islIds = Object.create(null);
+      for (i = 0; i < list.length; i++) {
+        var isl = list[i];
+        if (isl.id === undefined || isl.id === null || isl.id === '') {
+          out.push({
+            level: 'error', kind: 'data', face: face,
+            text: 'An island on the ' + face + ' has no id.'
+          });
+        } else if (islIds[isl.id]) {
+          out.push({
+            level: 'error', kind: 'data', face: face,
+            text: 'Island id ' + isl.id + ' is used twice on the ' + face + '.'
+          });
+        } else {
+          islIds[isl.id] = 1;
+        }
+        var inThis = Object.create(null);
+        for (j = 0; j < isl.cells.length; j++) {
+          var id = isl.cells[j];
+          if (!byId[id]) {
+            out.push({
+              level: 'error', kind: 'net', face: face,
+              text: (isl.name || isl.id) + ' lists cell ' + id + ', which is not in the pack.'
+            });
+            continue;
+          }
+          if (inThis[id]) {
+            out.push({
+              level: 'error', kind: 'net', face: face,
+              text: 'Cell ' + id + ' is listed twice in ' + (isl.name || isl.id) + ' on the ' + face + '.'
+            });
+            continue;
+          }
+          inThis[id] = 1;
+          if (owner[face][id] !== undefined) {
+            out.push({
+              level: 'error', kind: 'net', face: face,
+              text: 'Cell ' + id + ' is in two islands on the ' + face + '.'
+            });
+          } else {
+            owner[face][id] = isl.id;
+          }
+        }
+      }
+      for (i = 0; i < cells.length; i++) {
+        if (!cells[i] || cells[i].id === undefined) continue;
+        if (owner[face][cells[i].id] === undefined) {
+          out.push({
+            level: 'warn', kind: 'net', face: face,
+            text: 'Terminal ' + cells[i].id + ' is not connected on the ' + face + '.'
+          });
+        }
+      }
+    }
+
+    return out.concat(
+      shortCheck(doc, owner),
+      currentCheck(doc, params, byId),
+      terminalCheck(doc, { byId: byId, owner: owner })
+    );
   }
 
   /* ------------------------------------------------------------------ */
@@ -1052,6 +1754,7 @@
     o.push('<text x="' + pad + '" y="' + (pad + 8) + '" font-size="7" font-weight="bold">' + esc(doc.name || 'Battery pack') + ' - connection layers, 1:1 at 100%</text>');
     o.push('<text x="' + pad + '" y="' + (pad + 16) + '" font-size="3.6" fill="#555">cell ' + esc(doc.cellType || 'custom') + ' D' + doc.params.cellD + ' mm, pitch ' + doc.params.pitch.toFixed(2) + ' mm, pad D' + doc.params.padD + ' mm, strap ' + doc.params.bridgeW + ' mm, kerf ' + doc.params.kerf + ' mm, ' + (doc.params.cut === 'lines' ? 'weld-line cut at ' + (doc.params.lineAngle || 0) + '&#176;, ' : 'plate, ') + (doc.params.guides ? 'guide slits ' + (doc.params.guideL || 8) + ' mm at ' + (doc.params.lineAngle || 0) + '&#176;, ' : '') + doc.cells.length + ' cells</text>');
 
+    var flow = currentPath(doc);
     var panels = [
       { sheet: top, title: 'TOP sheet (cut as shown, lay on pack as shown)', x: pad },
       { sheet: bottom, title: 'BOTTOM sheet (cut as shown, flip over to fit)', x: pad + W + gap }
@@ -1083,6 +1786,30 @@
         o.push('<text x="' + (ox + pos.x).toFixed(2) + '" y="' + (oy + pos.y + 8.5).toFixed(2) + '" font-size="2.6" text-anchor="middle" fill="#777">' + (c + 1) + '</text>');
         seen[c] = 1;
       }
+
+      /* the main current path, drawn only on the sheet it runs on */
+      if (flow && flow.ok) {
+        for (var sp = 0; sp < flow.spans.length; sp++) {
+          var span = flow.spans[sp];
+          if (span.face !== sh.face || span.points.length < 2) continue;
+          var dpath = [];
+          for (var pp = 0; pp < span.points.length; pp++) {
+            var q = span.points[pp];
+            var qx = sh.face === 'bottom' ? W - q.x : q.x;
+            dpath.push((pp ? 'L' : 'M') + (ox + qx).toFixed(2) + ' ' + (oy + q.y).toFixed(2));
+          }
+          o.push('<path d="' + dpath.join(' ') + '" fill="none" stroke="#d23b3b" stroke-width="0.55" stroke-dasharray="3 1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>');
+        }
+        var endMark = function (end, label) {
+          if (!end || end.face !== sh.face || !end.cell) return;
+          var ep = cellOnFace(doc, frame, sh.face, end.cell);
+          var er = doc.params.cellD / 2;
+          o.push('<circle cx="' + (ox + ep.x).toFixed(2) + '" cy="' + (oy + ep.y).toFixed(2) + '" r="' + (er + 1.6).toFixed(2) + '" fill="none" stroke="#c22f2f" stroke-width="0.9"/>');
+          o.push('<text x="' + (ox + ep.x).toFixed(2) + '" y="' + (oy + ep.y - er - 2.4).toFixed(2) + '" font-size="3.6" font-weight="bold" fill="#a11f1f" text-anchor="middle">' + label + '</text>');
+        };
+        endMark(flow.neg, 'PACK -');
+        endMark(flow.pos, 'PACK +');
+      }
     }
 
     /* legend */
@@ -1099,6 +1826,10 @@
       o.push('<rect x="' + lx + '" y="' + (y - 2.6) + '" width="4" height="4" fill="' + esc(rows[r2].isl.color) + '"/>');
       o.push('<text x="' + (lx + 6) + '" y="' + y + '" font-size="3.2">' + esc(rows[r2].face.toUpperCase().slice(0, 3)) + ' ' + esc(rows[r2].isl.name) + '  (' + rows[r2].isl.cells + ' cells, ' + rows[r2].isl.polarity + ')</text>');
     }
+    if (flow && flow.ok) {
+      o.push('<text x="' + lx + '" y="' + (ly + 8 + Math.min(rows.length, 34) * 5) + '" font-size="3.2" fill="#a11f1f">Dashed red: main current path</text>');
+      o.push('<text x="' + lx + '" y="' + (ly + 12 + Math.min(rows.length, 34) * 5) + '" font-size="3.2" fill="#a11f1f">from the PACK - end to the PACK + end.</text>');
+    }
 
     o.push('</g>');
     o.push('</svg>');
@@ -1106,10 +1837,13 @@
   }
 
   return {
-    version: '1.4.0',
+    version: '1.6.0',
     mst: mst,
     neighbourPairs: neighbourPairs,
+    weldBands: weldBands,
     weldOrder: weldOrder,
+    bandGap: bandGap,
+    islandEdges: islandEdges,
     islandPrimitives: islandPrimitives,
     guideSlots: guideSlots,
     guideMaxLen: guideMaxLen,
@@ -1129,6 +1863,7 @@
     cellOnFace: cellOnFace,
     polarityOnFace: polarityOnFace,
     buildSheet: buildSheet,
+    currentPath: currentPath,
     diagnose: diagnose,
     toSVG: toSVG,
     toDXF: toDXF,
