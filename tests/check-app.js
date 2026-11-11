@@ -27,7 +27,9 @@ try {
 /* cheap structural checks */
 const ids = [...html.matchAll(/id="([^"]+)"/g)].map(m => m[1]);
 const used = [...code.matchAll(/\$\('([^']+)'\)/g)].map(m => m[1]);
-const missing = [...new Set(used)].filter(u => !ids.includes(u));
+/* ids created at runtime by the app itself, not present in the markup */
+const DYNAMIC_IDS = new Set(['chipDel']);
+const missing = [...new Set(used)].filter(u => !ids.includes(u) && !DYNAMIC_IDS.has(u));
 if (missing.length) {
   console.error('MISSING ELEMENT IDS: ' + missing.join(', '));
   process.exit(1);

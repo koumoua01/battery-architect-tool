@@ -6,6 +6,9 @@
   var G = window.BAGeo;
   var cv = $('cv');
   var ctx = cv.getContext('2d');
+  var mini = $('mini');
+  var mctx = mini ? mini.getContext('2d') : null;
+  var miniDrag = null;
 
   var PALETTE = ['#4fc3f7', '#aed581', '#ffb74d', '#ba68c8', '#4db6ac', '#e57373',
                  '#fff176', '#9575cd', '#f06292', '#90a4ae', '#a1887f', '#7986cb'];
@@ -29,18 +32,34 @@
     drc: [],
     buildMs: 0,
     flowOn: true,
+    flowMode: 'islands',
     flowPath: null,
+    flowPlan: null,
+    flowPlanFor: null,
+    flowPlanFace: null,
+    flowPlanStart: 0,
     terminalPick: null,
     flowLast: 0,
     dragging: false,
     pan: null,
     paintMode: null,
+    wet: null,
     dirty: true,
     anim: [],
     hiRow: null,
     strokeBefore: null,
     strokeFrame: null,
-    animAnchor: null
+    animAnchor: null,
+    hiIsland: null,
+    theme: 'midnight',
+    grid: true,
+    mini: true,
+    leftOpen: true,
+    rightOpen: true,
+    zoomAnim: null,
+    selPulse: 0,
+    cmd: { open: false, index: 0, items: [] },
+    unsaved: true
   };
 
   /* people who ask their system to tone motion down get the final picture
@@ -50,6 +69,84 @@
     REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   } catch (e) { }
   var ANIM_GROW = 240, ANIM_SHRINK = 210;
+
+  /* ------------------------------------------------------------------ */
+  /* theme                                                               */
+  /*
+   * The panel colours live in CSS custom properties, but the sheet is a
+   * canvas: its paper, its grid, its cell rings and the current path are
+   * painted numbers, so they need the same palette in JavaScript. Both
+   * halves come from here, and a theme switch is one repaint.
+   */
+  /* ------------------------------------------------------------------ */
+
+  var THEMES = {
+    midnight: {
+      name: 'Midnight',
+      canvas: '#101318', sheet: '#181d24', sheetLine: '#3a4451',
+      grid: 'rgba(255,255,255,0.047)', rowBand: 'rgba(255,255,255,0.07)', rowLine: 'rgba(255,255,255,0.157)',
+      cell: '#5b6675', cellHot: '#ffffff', pick: '#ff6f6f',
+      plus: '#e2837f', minus: '#7fb2e2', label: '#77828f', subLabel: '#8fb6d6',
+      slit: '#0a0d12', slitEdge: 0.32, accent: '#4fc3f7',
+      flow: '#ff5a5a', flowGlow: 'rgba(255,86,86,0.20)',
+      endNeg: '#5aa9ff', endPos: '#ff6b6b',
+      animAdd: '#ffffff', animDel: '#ff9d6b', animFlip: '#9ee6ff',
+      fillA: 0.22, fillSelA: 0.42, ghostFillA: 0.18, ghostLineA: 0.95
+    },
+    day: {
+      name: 'Daylight',
+      canvas: '#e9eef5', sheet: '#ffffff', sheetLine: '#bcc9d8',
+      grid: 'rgba(24,48,72,0.06)', rowBand: 'rgba(11,127,168,0.07)', rowLine: 'rgba(11,127,168,0.16)',
+      cell: '#93a4b6', cellHot: '#0b7fa8', pick: '#c33b3b',
+      plus: '#b85b57', minus: '#4f80b5', label: '#64798f', subLabel: '#4b7da3',
+      slit: '#b3c2d2', slitEdge: 0.5, accent: '#0b7fa8',
+      flow: '#d63c3c', flowGlow: 'rgba(214,60,60,0.18)',
+      endNeg: '#1f77c8', endPos: '#d63c3c',
+      animAdd: '#0b7fa8', animDel: '#c4562b', animFlip: '#0b7fa8',
+      fillA: 0.26, fillSelA: 0.46, ghostFillA: 0.16, ghostLineA: 0.9
+    }
+  };
+  var TH = THEMES.midnight;
+
+  function applyTheme(name, announce) {
+    name = THEMES[name] ? name : 'midnight';
+    S.theme = name;
+    TH = THEMES[name];
+    document.documentElement.setAttribute('data-theme', name === 'day' ? 'day' : 'midnight');
+    var btn = $('btnTheme');
+    if (btn) {
+      btn.classList.toggle('on', name === 'day');
+      btn.title = name === 'day'
+        ? 'Switch to the midnight theme'
+        : 'Switch to the daylight theme';
+      btn.setAttribute('aria-pressed', name === 'day' ? 'true' : 'false');
+    }
+    S.dirty = true;
+    var stage = $('stage');
+    if (stage && !REDUCED) {
+      stage.classList.remove('theme-fade');
+      void stage.offsetWidth;
+      stage.classList.add('theme-fade');
+      setTimeout(function () { stage.classList.remove('theme-fade'); }, 340);
+    }
+    if (announce) toast(TH.name + ' theme');
+  }
+
+  function readUi() {
+    var out = {};
+    try { out = JSON.parse(localStorage.getItem('battery-architect.ui') || '{}') || {}; } catch (e) { }
+    return out;
+  }
+
+  function saveUi() {
+    try {
+      localStorage.setItem('battery-architect.ui', JSON.stringify({
+        theme: S.theme, grid: S.grid, mini: S.mini,
+        leftOpen: S.leftOpen, rightOpen: S.rightOpen,
+        flowMode: S.flowMode
+      }));
+    } catch (e) { }
+  }
 
   /* ------------------------------------------------------------------ */
   /* document                                                            */
@@ -342,8 +439,14 @@
     } else if (!neg || !pos) {
       note.innerHTML = 'One end set. Pick the other one to trace the path through the cells.';
     } else if (flow && flow.ok) {
+      var islands = flowIslandCount(flow);
+      var how = S.flowMode === 'cells'
+        ? 'The pulse follows the pad-to-pad metal route and hops between islands.'
+        : 'The overlay joins island centers; switch to Cell route for the exact pad path.';
       note.innerHTML = 'Main path: <b>' + flow.cells.length + ' cell' + (flow.cells.length === 1 ? '' : 's') +
-        '</b> from the &minus; end to the + end, <b>' + flow.length.toFixed(0) + ' mm</b> of traced route.';
+        '</b> through <b>' + islands + ' island' + (islands === 1 ? '' : 's') +
+        '</b> from the &minus; end to the + end, <b>' + flow.length.toFixed(0) +
+        ' mm</b> of traced route. ' + how;
     } else if (flow && flow.reason === 'open') {
       note.innerHTML = 'No directed path from the &minus; end to the + end. Check the flips between them.';
     } else if (flow && flow.reason === 'same-island') {
@@ -392,25 +495,50 @@
   /* mutations                                                           */
   /* ------------------------------------------------------------------ */
 
+  /* A stroke keeps the last exact sheet on screen and records which islands
+     it has changed. The draw pass then hides those stale islands and draws
+     their current cells as a wet preview, so every cell appears under the
+     pointer without waiting for the button to come up. */
+  function wetMark(id) {
+    if (!S.wet || !id) return;
+    S.wet.changed[id] = 1;
+    S.wet.gen++;
+  }
+
+  function wetCell(cellId, kind) {
+    if (!S.wet) return;
+    S.wet.trail.push({ id: cellId, kind: kind || 'paint' });
+    if (S.wet.trail.length > 260) S.wet.trail.shift();
+  }
+
   function detach(face, cellId) {
     var list = S.doc.islands[face];
+    var hit = false;
     for (var i = 0; i < list.length; i++) {
       var idx = list[i].cells.indexOf(cellId);
-      if (idx >= 0) list[i].cells.splice(idx, 1);
+      if (idx >= 0) {
+        list[i].cells.splice(idx, 1);
+        wetMark(list[i].id);
+        hit = true;
+      }
     }
+    return hit;
   }
 
   function paint(cellId) {
     var isl = S.sel ? islandById(S.face, S.sel) : null;
     if (!isl) isl = addIsland(S.face);
+    /* dragging back over a cell already in this island is not a new edit:
+       without this, every pointer move would invalidate the same preview */
+    if (isl.cells.indexOf(cellId) >= 0) return;
     detach(S.face, cellId);
     isl.cells.push(cellId);
-    invalidate(S.face);
+    wetMark(isl.id);
+    wetCell(cellId, 'paint');
   }
 
   function erase(cellId) {
-    detach(S.face, cellId);
-    invalidate(S.face);
+    if (detach(S.face, cellId)) wetCell(cellId, 'erase');
   }
 
   function paintRow(cellId) {
@@ -471,7 +599,7 @@
       var m = {};
       (S.doc.islands[face] || []).forEach(function (isl) {
         var pts = islandPts(face, isl);
-        m[isl.id] = { pts: pts, prims: pts.length ? G.islandPrimitives(pts, S.doc.params) : [] };
+        m[isl.id] = { pts: pts, color: isl.color, prims: pts.length ? G.islandPrimitives(pts, S.doc.params) : [] };
       });
       out[face] = m;
     }
@@ -494,6 +622,19 @@
     var faces = Object.keys(before);
     for (var i = 0; i < faces.length; i++) {
       var face = faces[i];
+      /* an island that is gone from the document still has to play its metal
+         out: the diff walks the old list as well as the live one */
+      var gone = {};
+      Object.keys(before[face]).forEach(function (id) {
+        var live = false;
+        (S.doc.islands[face] || []).forEach(function (x) { if (x.id === id) live = true; });
+        if (!live) gone[id] = 1;
+      });
+      Object.keys(gone).forEach(function (id) {
+        before[face][id].prims.forEach(function (q) {
+          pushAnim(makeItem(face, q, before[face][id].color || '#8b98a9', false, now, anchor));
+        });
+      });
       (S.doc.islands[face] || []).forEach(function (isl) {
         var oldList = before[face][isl.id] ? before[face][isl.id].prims : [];
         var pts = islandPts(face, isl);
@@ -554,14 +695,14 @@
           var w = Math.max(0.9, a.r * 0.42);
           var ex = a.fx + (a.ox - a.fx) * e, ey = a.fy + (a.oy - a.fy) * e;
           ctx.globalAlpha = 1 - 0.45 * e;
-          ctx.strokeStyle = '#ffffff';
+          ctx.strokeStyle = TH.animAdd;
           ctx.lineWidth = w;
           ctx.lineCap = 'round';
           ctx.beginPath();
           ctx.moveTo(a.fx, a.fy);
           ctx.lineTo(ex, ey);
           ctx.stroke();
-          ctx.fillStyle = '#ffffff';
+          ctx.fillStyle = TH.animAdd;
           ctx.beginPath();
           ctx.arc(ex, ey, w * 0.75, 0, Math.PI * 2);
           ctx.fill();
@@ -569,7 +710,7 @@
           /* a connection being taken away thins out and fades where it was:
              no stub left behind in the middle of a pad */
           ctx.globalAlpha = 0.8 * (1 - e);
-          ctx.strokeStyle = '#ff9d6b';
+          ctx.strokeStyle = TH.animDel;
           ctx.lineWidth = Math.max(0.7, a.r * 0.2) * (1 - 0.4 * e);
           ctx.lineCap = 'round';
           ctx.beginPath();
@@ -580,7 +721,7 @@
       } else if (a.kind === 'pad') {
         var r = a.grow ? a.r * (0.28 + 0.72 * e) : a.r * (1 - 0.72 * e);
         ctx.globalAlpha = a.grow ? (0.9 - 0.45 * e) : (0.8 * (1 - e));
-        ctx.strokeStyle = a.grow ? '#ffffff' : '#ff9d6b';
+        ctx.strokeStyle = a.grow ? TH.animAdd : TH.animDel;
         ctx.lineWidth = Math.max(0.8, 1.5 - e);
         ctx.beginPath();
         ctx.arc(a.x1, a.y1, r, 0, Math.PI * 2);
@@ -589,12 +730,12 @@
         var rr = a.r * (1 - e);
         if (rr > 0.1) {
           ctx.globalAlpha = 0.8 * (1 - e);
-          ctx.strokeStyle = '#ff9d6b';
+          ctx.strokeStyle = TH.animDel;
           ctx.lineWidth = Math.max(0.7, rr * 0.09);
           ctx.beginPath();
           ctx.arc(a.x1, a.y1, rr, 0, Math.PI * 2);
           ctx.stroke();
-          ctx.fillStyle = '#ff9d6b';
+          ctx.fillStyle = TH.animDel;
           ctx.font = (rr * 0.95) + 'px "Segoe UI", sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
@@ -602,7 +743,7 @@
         }
       } else if (a.kind === 'flip') {
         ctx.globalAlpha = 0.75 * (1 - e);
-        ctx.strokeStyle = '#9ee6ff';
+        ctx.strokeStyle = TH.animFlip;
         ctx.lineWidth = Math.max(0.7, a.r * 0.07);
         ctx.beginPath();
         ctx.arc(a.x1, a.y1, a.r * (0.55 + 0.75 * e), 0, Math.PI * 2);
@@ -629,25 +770,49 @@
   /* undo, delete, rotate                                                */
   /* ------------------------------------------------------------------ */
 
-  /* Removing a cell cannot be painted back, so keep a small snapshot stack.
-     Forty steps is far more than anyone needs and costs nothing. */
-  var HISTORY = [];
+  /* Removing a cell cannot be painted back, so keep a snapshot stack. Forty
+     steps each way is far more than anyone needs and costs nothing. A new
+     edit after an undo clears the redo branch, exactly like an editor. */
+  var HISTORY = [], FUTURE = [];
+
   function snapshot() {
     try {
       HISTORY.push(JSON.stringify(S.doc));
       if (HISTORY.length > 40) HISTORY.shift();
+      FUTURE.length = 0;
     } catch (e) { }
+    S.unsaved = true;
+    setSaveState('edited', true);
+    scheduleSave();
+    syncToolbar();
   }
 
   function undo() {
     if (!HISTORY.length) { toast('Nothing to undo'); return; }
     var txt = HISTORY.pop();
     try {
+      FUTURE.push(JSON.stringify(S.doc));
+      if (FUTURE.length > 40) FUTURE.shift();
       adoptDoc(JSON.parse(txt));
       toast('Undone');
     } catch (e) {
       toast('Could not undo');
     }
+    syncToolbar();
+  }
+
+  function redo() {
+    if (!FUTURE.length) { toast('Nothing to redo'); return; }
+    var txt = FUTURE.pop();
+    try {
+      HISTORY.push(JSON.stringify(S.doc));
+      if (HISTORY.length > 40) HISTORY.shift();
+      adoptDoc(JSON.parse(txt));
+      toast('Redone');
+    } catch (e) {
+      toast('Could not redo');
+    }
+    syncToolbar();
   }
 
   /* take a cell out of the pack completely - both faces and every island.
@@ -676,6 +841,42 @@
     if (S.hover && S.hover.id === id) S.hover = null;
     invalidate('top');
     invalidate('bottom');
+    return true;
+  }
+
+  /* Take a whole island off one sheet. The cells stay in the pack - they are
+     still welded by the other sheet - so only the metal goes: every pad and
+     strap of the island shrinks away in place, which is exactly the outline
+     the old build had minus the new, empty one. A pack end that sat on one of
+     its pads goes too, because an end is a pad on an island. */
+  function deleteIsland(face, id) {
+    var list = S.doc.islands[face] || [];
+    var idx = -1;
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) { idx = i; break; }
+    if (idx < 0) return false;
+    var isl = list[idx];
+    var before = REDUCED ? null : snapPrims([face]);
+    var f0 = frameSig();
+    list.splice(idx, 1);
+    var ends = 0;
+    var t = S.doc.terminals;
+    if (t) {
+      ['neg', 'pos'].forEach(function (k) {
+        var e = t[k];
+        if (e && e.face === face && isl.cells.indexOf(e.cell) >= 0) { t[k] = null; ends++; }
+      });
+    }
+    if (S.sel === id) S.sel = list.length ? list[0].id : null;
+    invalidate(face);
+    renderPalette();
+    rebuildAll();
+    animFromDiff(before, f0);
+    S.animAnchor = null;
+    S.dirty = true;
+    toast((isl.name || 'Island') + ' removed from the ' + face + ' sheet' +
+          (isl.cells.length ? ' - its ' + isl.cells.length + (isl.cells.length === 1 ? ' cell stays' : ' cells stay') +
+            ' in the pack, welded by the other sheet' : '') +
+          (ends ? ', and the pack end' + (ends === 1 ? '' : 's') + ' that sat on it' : ''));
     return true;
   }
 
@@ -788,6 +989,7 @@
     S.flowPath = G.currentPath(S.doc);
     S.drc = G.diagnose(S.doc)
       .concat(gapCheck('top'), gapCheck('bottom'), partsCheck('top'), partsCheck('bottom'));
+    syncGroupControls();
     /* a full rebuild is exactly what "the sheet already matches these slider
        values" means, so the promise is renewed here rather than by whoever
        happened to change a number: the cut style changes two widths without
@@ -819,7 +1021,121 @@
     S.zoom = Math.min(S.vw / (f.W + 24), S.vh / (f.H + 24));
     S.px = (S.vw - f.W * S.zoom) / 2;
     S.py = (S.vh - f.H * S.zoom) / 2;
+    S.zoomAnim = null;
+    syncZoomLabel();
     S.dirty = true;
+  }
+
+  /* 100 % means one millimetre of sheet to 96 dpi of screen, which is the
+     number a cutting template is usually checked against. */
+  var PX_PER_MM = 96 / 25.4;
+  var ZOOM_MIN = 0.4, ZOOM_MAX = 30;
+
+  function syncZoomLabel() {
+    var el = $('zoomPct');
+    if (!el) return;
+    el.textContent = Math.round(S.zoom / PX_PER_MM * 100) + '%';
+    el.title = 'Zoom ' + Math.round(S.zoom / PX_PER_MM * 100) +
+               '% of 1:1 - click for 100%';
+  }
+
+  function setView(z, px, py) {
+    S.zoomAnim = null;
+    S.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+    S.px = px; S.py = py;
+    syncZoomLabel();
+    S.dirty = true;
+  }
+
+  /* Zoom is animated rather than snapped: the eye keeps the point it was
+     looking at, which is what makes a zoom button usable on a dense pack. */
+  function animateView(z2, px2, py2, dur) {
+    z2 = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z2));
+    if (REDUCED) { setView(z2, px2, py2); return; }
+    S.zoomAnim = {
+      z0: S.zoom, z1: z2, x0: S.px, x1: px2, y0: S.py, y1: py2,
+      t0: performance.now(), dur: dur || 230
+    };
+    S.dirty = true;
+  }
+
+  function stepViewAnim(now) {
+    var a = S.zoomAnim;
+    if (!a) return;
+    var t = (now - a.t0) / a.dur;
+    if (t < 0) t = 0;
+    if (t >= 1) {
+      S.zoom = a.z1; S.px = a.x1; S.py = a.y1;
+      S.zoomAnim = null;
+    } else {
+      var e = 1 - Math.pow(1 - t, 3);
+      S.zoom = a.z0 + (a.z1 - a.z0) * e;
+      S.px = a.x0 + (a.x1 - a.x0) * e;
+      S.py = a.y0 + (a.y1 - a.y0) * e;
+    }
+    syncZoomLabel();
+    S.dirty = true;
+  }
+
+  function zoomAt(factor, ax, ay) {
+    if (ax === undefined) ax = S.vw / 2;
+    if (ay === undefined) ay = S.vh / 2;
+    var wx = (ax - S.px) / S.zoom;
+    var wy = (ay - S.py) / S.zoom;
+    var z2 = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, S.zoom * factor));
+    animateView(z2, ax - wx * z2, ay - wy * z2, 200);
+  }
+
+  function setZoomPercent(pct) {
+    var z2 = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, (pct / 100) * PX_PER_MM));
+    var ax = S.vw / 2, ay = S.vh / 2;
+    var wx = (ax - S.px) / S.zoom, wy = (ay - S.py) / S.zoom;
+    animateView(z2, ax - wx * z2, ay - wy * z2, 220);
+  }
+
+  function fitViewAnimated() {
+    var f = G.frameOf(S.doc);
+    S.frame = f;
+    var z2 = Math.min(S.vw / (f.W + 24), S.vh / (f.H + 24));
+    var px2 = (S.vw - f.W * z2) / 2;
+    var py2 = (S.vh - f.H * z2) / 2;
+    animateView(z2, px2, py2, 280);
+  }
+
+  function viewCenterSheet() {
+    return { x: (S.vw / 2 - S.px) / S.zoom, y: (S.vh / 2 - S.py) / S.zoom };
+  }
+
+  function centerViewOn(pt, animate) {
+    var px2 = S.vw / 2 - pt.x * S.zoom;
+    var py2 = S.vh / 2 - pt.y * S.zoom;
+    if (animate) animateView(S.zoom, px2, py2, 200);
+    else setView(S.zoom, px2, py2);
+  }
+
+  /* Double-clicking an island in either list frames that piece. On a large
+     pack it is the quickest way to inspect one strip without losing the
+     overview first. */
+  function zoomToIsland(face, id) {
+    var isl = islandById(face, id);
+    if (!isl || !isl.cells.length) { toast('That island has no cells'); return; }
+    var f = G.frameOf(S.doc);
+    S.frame = f;
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (var i = 0; i < isl.cells.length; i++) {
+      var c = findCell(isl.cells[i]);
+      if (!c) continue;
+      var p = G.cellOnFace(S.doc, f, face, c);
+      if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+      if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+    }
+    if (!isFinite(x0)) { toast('Could not find that island'); return; }
+    var pad = 16;
+    var z = Math.min(S.vw / (x1 - x0 + pad * 2), S.vh / (y1 - y0 + pad * 2));
+    z = Math.max(ZOOM_MIN, Math.min(14, z));
+    var cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    animateView(z, S.vw / 2 - cx * z, S.vh / 2 - cy * z, 320);
+    toast((isl.name || 'Island') + ' - ' + isl.cells.length + ' cells framed');
   }
 
   function toSheet(ev) {
@@ -848,7 +1164,7 @@
     S.dirty = false;
     var f = S.frame || (S.frame = G.frameOf(S.doc));
     var zoom = S.zoom;
-    ctx.fillStyle = '#101318';
+    ctx.fillStyle = TH.canvas;
     ctx.fillRect(0, 0, S.vw, S.vh);
 
     ctx.save();
@@ -856,28 +1172,30 @@
     ctx.scale(zoom, zoom);
 
     /* sheet plate */
-    ctx.fillStyle = '#181d24';
+    ctx.fillStyle = TH.sheet;
     ctx.fillRect(0, 0, f.W, f.H);
-    ctx.strokeStyle = '#3a4451';
+    ctx.strokeStyle = TH.sheetLine;
     ctx.lineWidth = 1 / zoom;
     ctx.strokeRect(0, 0, f.W, f.H);
 
-    /* 10 mm grid */
-    ctx.strokeStyle = '#ffffff0c';
-    ctx.lineWidth = 1 / zoom;
-    ctx.beginPath();
-    for (var gx = 0; gx <= f.W; gx += 10) { ctx.moveTo(gx, 0); ctx.lineTo(gx, f.H); }
-    for (var gy = 0; gy <= f.H; gy += 10) { ctx.moveTo(0, gy); ctx.lineTo(f.W, gy); }
-    ctx.stroke();
+    /* 10 mm grid - a view option, never part of the document */
+    if (S.grid) {
+      ctx.strokeStyle = TH.grid;
+      ctx.lineWidth = 1 / zoom;
+      ctx.beginPath();
+      for (var gx = 0; gx <= f.W; gx += 10) { ctx.moveTo(gx, 0); ctx.lineTo(gx, f.H); }
+      for (var gy = 0; gy <= f.H; gy += 10) { ctx.moveTo(0, gy); ctx.lineTo(f.W, gy); }
+      ctx.stroke();
+    }
 
     /* the row under the pointer in the Rows list, so a row number means
        something on the sheet */
     if (S.hiRow !== null) {
       var band = Math.max(4, S.doc.params.pitch * 0.5);
       var y0b = S.hiRow + f.oy - band / 2;
-      ctx.fillStyle = '#ffffff12';
+      ctx.fillStyle = TH.rowBand;
       ctx.fillRect(0, y0b, f.W, band);
-      ctx.strokeStyle = '#ffffff28';
+      ctx.strokeStyle = TH.rowLine;
       ctx.lineWidth = 1 / zoom;
       ctx.beginPath();
       ctx.moveTo(0, y0b); ctx.lineTo(f.W, y0b);
@@ -885,7 +1203,17 @@
       ctx.stroke();
     }
 
+    /* While a paint stroke is down, refresh the exact face as often as its
+       own build cost allows. Between those traces the changed islands are
+       drawn from their primitives, so a pointer move never has to wait for a
+       contour. The full both-face rebuild still waits for the release. */
+    var wetLive = !!(S.dragging && S.wet);
+    if (wetLive) {
+      if (!S.sheets[S.face]) S.wet.gap = 0;
+      paintPreviewDue(performance.now());
+    }
     var sheet = S.sheets[S.face];
+    var wetDirty = !!(wetLive && S.wet.builtGen !== S.wet.gen);
 
     /* the far sheet: its body lies under the near metal, its edges are drawn
        over it, so a plate you are not editing still reads at a glance */
@@ -894,7 +1222,10 @@
     if (sheet) {
       for (var i = 0; i < sheet.islands.length; i++) {
         var fill = sheet.islands[i];
-        ctx.fillStyle = hexA(fill.color, (S.sel && fill.id === S.sel) ? 0.42 : 0.22);
+        if (wetDirty && S.wet.changed[fill.id]) continue;
+        var hot = S.hiIsland && fill.id === S.hiIsland;
+        ctx.fillStyle = hexA(fill.color,
+          (S.sel && fill.id === S.sel) ? TH.fillSelA : hot ? TH.fillSelA * 0.8 : TH.fillA);
         ctx.fill(islandPath(fill), 'evenodd');
       }
     }
@@ -904,13 +1235,16 @@
     if (sheet) {
       for (i = 0; i < sheet.islands.length; i++) {
         var isl = sheet.islands[i];
-        var src = islandById(S.face, isl.id);
+        if (wetDirty && S.wet.changed[isl.id]) continue;
         ctx.strokeStyle = isl.color;
-        ctx.lineWidth = (S.sel && isl.id === S.sel ? 2.2 : 1.4) / zoom;
+        ctx.lineWidth = (S.sel && isl.id === S.sel ? 2.2
+          : S.hiIsland && isl.id === S.hiIsland ? 1.9 : 1.4) / zoom;
         ctx.stroke(islandPath(isl));
-        if (src && S.dragging && isl.id === S.sel) drawPrims(src);
       }
     }
+
+    /* the changed islands are live, the rest of the sheet stays exact */
+    if (wetDirty) drawWetIslands();
 
     /* cells */
     var r = S.doc.params.cellD / 2;
@@ -930,7 +1264,17 @@
         ctx.fillStyle = 'rgba(239,107,107,0.06)';
         ctx.fill();
       }
-      ctx.strokeStyle = isPick ? '#ff6f6f' : (isHot ? '#ffffff' : '#5b6675');
+      /* a soft halo under the pointer: the cell you are about to paint, flip
+         or take away is obvious without any colour being committed to it */
+      if (isHot) {
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, r + 3.2 / zoom, 0, Math.PI * 2);
+        ctx.strokeStyle = hexA(S.tool === 'delete' ? TH.pick : TH.accent, 0.30);
+        ctx.lineWidth = 5 / zoom;
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = isPick ? TH.pick : (isHot ? TH.cellHot : TH.cell);
       ctx.lineWidth = (isPick ? 2.2 : isHot ? 1.6 : 1) / zoom;
       ctx.stroke();
 
@@ -941,18 +1285,18 @@
         ctx.arc(pos.x, pos.y, r + 2.4 / zoom, 0, Math.PI * 2);
         ctx.setLineDash([2.4 / zoom, 2 / zoom]);
         ctx.lineWidth = 1.3 / zoom;
-        ctx.strokeStyle = '#ff6f6f';
+        ctx.strokeStyle = TH.pick;
         ctx.stroke();
         ctx.setLineDash([]);
       }
 
-      ctx.fillStyle = pol === '+' ? '#e2837f' : '#7fb2e2';
+      ctx.fillStyle = pol === '+' ? TH.plus : TH.minus;
       ctx.font = (r * 0.95) + 'px "Segoe UI", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(pol, pos.x, pos.y + r * 0.04);
       if (r >= 9) {
-        ctx.fillStyle = '#77828f';
+        ctx.fillStyle = TH.label;
         ctx.font = (r * 0.42) + 'px "Segoe UI", sans-serif';
         ctx.fillText(String(c + 1), pos.x, pos.y + r * 0.62);
       }
@@ -961,18 +1305,23 @@
     /* the guide slits last, over the cell they mark */
     if (sheet) drawSlits(sheet);
 
+    /* the stroke's own trail, so direction and the cell under the pointer are
+       readable even when the island's metal did not change */
+    var drawNow = nowOverride === undefined ? performance.now() : nowOverride;
+    if (wetLive) drawWetTrail(drawNow);
+
     /* the main current path and the pack ends, over the metal and the cells */
-    drawFlow(nowOverride === undefined ? performance.now() : nowOverride);
-    drawEnds();
+    drawFlow(drawNow);
+    drawEnds(drawNow);
 
     /* the box being dragged out, over the cells it has already picked */
     if (S.marquee && S.marquee.moved) {
       var mm = S.marquee;
       var bx = Math.min(mm.x0, mm.x1), by = Math.min(mm.y0, mm.y1);
       var bw = Math.abs(mm.x1 - mm.x0), bh = Math.abs(mm.y1 - mm.y0);
-      ctx.fillStyle = 'rgba(239,107,107,0.09)';
+      ctx.fillStyle = hexA(TH.pick, 0.09);
       ctx.fillRect(bx, by, bw, bh);
-      ctx.strokeStyle = '#ff6f6f';
+      ctx.strokeStyle = TH.pick;
       ctx.lineWidth = 1.2 / zoom;
       ctx.setLineDash([4 / zoom, 3 / zoom]);
       ctx.strokeRect(bx, by, bw, bh);
@@ -985,17 +1334,198 @@
     ctx.restore();
 
     /* face label */
-    ctx.fillStyle = '#77828f';
+    ctx.fillStyle = TH.label;
     ctx.font = '600 11px "Segoe UI", sans-serif';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'top';
     ctx.fillText((S.face === 'top' ? 'TOP SHEET' : 'BOTTOM SHEET (mirrored)') + '  -  ' +
                  f.W.toFixed(1) + ' x ' + f.H.toFixed(1) + ' mm', S.vw - 12, 10);
     if (S.ghost && S.sheets[otherFace()] && S.sheets[otherFace()].islands.length) {
-      ctx.fillStyle = '#8fb6d6';
+      ctx.fillStyle = TH.subLabel;
       ctx.font = '600 10px "Segoe UI", sans-serif';
       ctx.fillText('dashed = ' + otherFace() + ' sheet, seen through', S.vw - 12, 25);
     }
+    drawScale();
+
+    /* an empty pack still says what to do next rather than showing a blank
+       sheet with no explanation */
+    if (!S.doc.cells.length) {
+      var cx0 = S.vw / 2, cy0 = S.vh / 2;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = TH.label;
+      ctx.font = '600 17px "Segoe UI", sans-serif';
+      ctx.fillText('Empty pack', cx0, cy0 - 14);
+      ctx.font = '12px "Segoe UI", sans-serif';
+      ctx.fillStyle = TH.subLabel;
+      ctx.fillText('Fill the grid, or press Ctrl+K for the command palette.', cx0, cy0 + 10);
+      ctx.font = '11px "Segoe UI", sans-serif';
+      ctx.fillText('Ctrl+Z still brings the last pack back.', cx0, cy0 + 28);
+    }
+
+    drawMini(nowOverride === undefined ? performance.now() : nowOverride);
+  }
+
+  /* A scale bar is the fastest way to read a sheet whose zoom changes: it
+     picks a round number of millimetres that lands between 55 and 150 screen
+     pixels, so it is always legible and always true. */
+  function drawScale() {
+    if (!S.zoom || S.vw < 260) return;
+    var options = [5, 10, 20, 50, 100, 200, 500];
+    var target = 96, mm = options[0], len = mm * S.zoom, best = Infinity;
+    for (var i = 0; i < options.length; i++) {
+      var l = options[i] * S.zoom;
+      if (l >= 55 && l <= 155) {
+        var d = Math.abs(l - target);
+        if (d < best) { best = d; mm = options[i]; len = l; }
+      }
+    }
+    if (!isFinite(best)) {
+      /* outside the comfortable range, take the nearest end of it */
+      var lo = options[0] * S.zoom, hi = options[options.length - 1] * S.zoom;
+      if (lo > 155) { mm = options[0]; len = lo; }
+      else { mm = options[options.length - 1]; len = hi; }
+    }
+    var x1 = S.vw - 14, x0 = x1 - len, y = 48;
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = TH.label;
+    ctx.fillStyle = TH.label;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x0, y); ctx.lineTo(x1, y);
+    ctx.moveTo(x0, y - 3); ctx.lineTo(x0, y + 3);
+    ctx.moveTo(x1, y - 3); ctx.lineTo(x1, y + 3);
+    ctx.stroke();
+    ctx.font = '600 9.5px "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(mm + ' mm', (x0 + x1) / 2, y - 5);
+    ctx.restore();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* minimap                                                             */
+  /*
+   * At a fit view the whole sheet is already on screen, so the minimap is
+   * only worth its pixels once you zoom in. It shows the same paper, the
+   * pieces on it and the rectangle of the sheet the main view can see; click
+   * or drag anywhere on it to move that rectangle.
+   */
+  /* ------------------------------------------------------------------ */
+
+  function resizeMini() {
+    if (!mini || !mctx) return;
+    var r = mini.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    var dpr = window.devicePixelRatio || 1;
+    mini.width = Math.max(1, Math.round(r.width * dpr));
+    mini.height = Math.max(1, Math.round(r.height * dpr));
+    mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function miniMap() {
+    var r = mini.getBoundingClientRect();
+    var f = S.frame;
+    if (!f) return null;
+    var pad = 9;
+    var z = Math.min((r.width - pad * 2) / Math.max(1, f.W), (r.height - pad * 2) / Math.max(1, f.H));
+    return {
+      r: r, f: f, z: z,
+      ox: (r.width - f.W * z) / 2,
+      oy: (r.height - f.H * z) / 2
+    };
+  }
+
+  function drawMini(now) {
+    if (!S.mini || !mini || !mctx) return;
+    var mm = miniMap();
+    if (!mm || !isFinite(mm.z) || mm.z <= 0) return;
+    var w = mm.r.width, h = mm.r.height, f = mm.f;
+    mctx.clearRect(0, 0, w, h);
+
+    /* a quiet dark/light wash behind the paper, so the map reads as its own
+       object without another border */
+    mctx.fillStyle = TH.canvas;
+    mctx.globalAlpha = 0.55;
+    mctx.fillRect(0, 0, w, h);
+    mctx.globalAlpha = 1;
+
+    mctx.save();
+    mctx.translate(mm.ox, mm.oy);
+    mctx.scale(mm.z, mm.z);
+
+    mctx.fillStyle = TH.sheet;
+    mctx.fillRect(0, 0, f.W, f.H);
+    mctx.strokeStyle = TH.sheetLine;
+    mctx.lineWidth = 1 / mm.z;
+    mctx.strokeRect(0, 0, f.W, f.H);
+
+    var sheet = S.sheets[S.face];
+    var wet = S.dragging ? S.wet : null;
+    var wetDirty = !!(wet && wet.builtGen !== wet.gen);
+    if (sheet) {
+      for (var i = 0; i < sheet.islands.length; i++) {
+        var isl = sheet.islands[i];
+        if (wetDirty && wet.changed[isl.id]) continue;
+        mctx.fillStyle = hexA(isl.color, S.sel === isl.id ? 0.55 : 0.34);
+        mctx.fill(islandPath(isl), 'evenodd');
+        mctx.strokeStyle = hexA(isl.color, 0.9);
+        mctx.lineWidth = 0.9 / mm.z;
+        mctx.stroke(islandPath(isl));
+      }
+    }
+    if (wetDirty) {
+      var live = S.doc.islands[S.face] || [];
+      for (var w = 0; w < live.length; w++) {
+        if (!wet.changed[live[w].id]) continue;
+        mctx.fillStyle = hexA(live[w].color, S.sel === live[w].id ? 0.55 : 0.34);
+        mctx.fill(wetPrimPath(live[w]));
+      }
+    }
+
+    if (S.ghost) {
+      mctx.save();
+      mctx.translate(f.W, 0);
+      mctx.scale(-1, 1);
+      var other = S.sheets[otherFace()];
+      if (other) {
+        for (var k = 0; k < other.islands.length; k++) {
+          mctx.strokeStyle = hexA(other.islands[k].color, 0.45);
+          mctx.lineWidth = 0.8 / mm.z;
+          mctx.setLineDash([2.5 / mm.z, 2 / mm.z]);
+          mctx.stroke(islandPath(other.islands[k]));
+        }
+      }
+      mctx.setLineDash([]);
+      mctx.restore();
+    }
+
+    /* pack ends, if any */
+    var flow = S.flowPath;
+    if (flow && flow.neg && flow.pos) {
+      [['neg', TH.endNeg], ['pos', TH.endPos]].forEach(function (pair) {
+        var e = flow[pair[0]];
+        if (!e) return;
+        var c = findCell(e.cell);
+        if (!c) return;
+        var p = G.cellOnFace(S.doc, f, S.face, c);
+        mctx.beginPath();
+        mctx.arc(p.x, p.y, Math.max(1.4, 2.4 / mm.z), 0, Math.PI * 2);
+        mctx.fillStyle = pair[1];
+        mctx.fill();
+      });
+    }
+
+    /* the window of the sheet the main view currently shows */
+    var vx = (-S.px) / S.zoom, vy = (-S.py) / S.zoom;
+    var vw = S.vw / S.zoom, vh = S.vh / S.zoom;
+    mctx.strokeStyle = TH.accent;
+    mctx.lineWidth = 1.4 / mm.z;
+    mctx.setLineDash([4 / mm.z, 3 / mm.z]);
+    mctx.strokeRect(vx, vy, vw, vh);
+    mctx.setLineDash([]);
+    mctx.restore();
   }
 
   /* the far sheet, drawn mirrored back into this sheet's coordinates so it
@@ -1018,14 +1548,14 @@
 
   function ghostFill() {
     ghostFrame(function (isl) {
-      ctx.fillStyle = hexA(isl.color, 0.18);
+      ctx.fillStyle = hexA(isl.color, TH.ghostFillA);
       ctx.fill(islandPath(isl), 'evenodd');
     });
   }
 
   function ghostLines() {
     ghostFrame(function (piece) {
-      ctx.strokeStyle = hexA(piece.color, 0.95);
+      ctx.strokeStyle = hexA(piece.color, TH.ghostLineA);
       ctx.lineWidth = 1.5 / S.zoom;
       ctx.setLineDash([6 / S.zoom, 4.5 / S.zoom]);
       ctx.stroke(islandPath(piece));
@@ -1058,9 +1588,9 @@
       if (!isl.slots || !isl.slots.length) continue;
       var path = new Path2D();
       addLoops(path, isl.slots);
-      ctx.fillStyle = '#0a0d12';
+      ctx.fillStyle = TH.slit;
       ctx.fill(path, 'evenodd');
-      ctx.strokeStyle = hexA(isl.color, 0.32);
+      ctx.strokeStyle = hexA(isl.color, TH.slitEdge);
       ctx.lineWidth = 0.8 / S.zoom;
       ctx.stroke(path);
     }
@@ -1114,43 +1644,601 @@
     return { x: pts[0].x, y: pts[0].y, a: 0 };
   }
 
-  function drawFlow(now) {
-    var flow = S.flowPath;
-    if (!S.flowOn || !flow || !flow.ok || flow.points.length < 2) return;
-    var pts = flow.points.map(localPoint);
-    var path = pathFromPoints(pts);
-    var zoom = S.zoom;
+  function polyLength(pts) {
+    var n = 0;
+    for (var i = 1; i < pts.length; i++) {
+      n += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    }
+    return n;
+  }
+
+  function pointAtDistance(pts, d) {
+    var total = polyLength(pts);
+    if (!(total > 0)) return { x: pts[0].x, y: pts[0].y, a: 0 };
+    d = Math.max(0, Math.min(total, d));
+    var run = 0;
+    for (var i = 1; i < pts.length; i++) {
+      var dx = pts[i].x - pts[i - 1].x, dy = pts[i].y - pts[i - 1].y;
+      var len = Math.hypot(dx, dy);
+      if (!(len > 0)) continue;
+      if (run + len >= d || i === pts.length - 1) {
+        var f = Math.max(0, Math.min(1, (d - run) / len));
+        return {
+          x: pts[i - 1].x + dx * f,
+          y: pts[i - 1].y + dy * f,
+          a: Math.atan2(dy, dx)
+        };
+      }
+      run += len;
+    }
+    return { x: pts[0].x, y: pts[0].y, a: 0 };
+  }
+
+  /* A route span is one island. Keeping the ends short of the shared pad is
+     what turns the old single line into separate island runs: the eye sees
+     where one piece of metal ends and the next begins. */
+  function slicePolyline(pts, from, to) {
+    var total = polyLength(pts);
+    var out = [];
+    if (!(total > 0)) return [{ x: pts[0].x, y: pts[0].y }];
+    from = Math.max(0, Math.min(total, from));
+    to = Math.max(from, Math.min(total, to));
+    function push(p) {
+      if (!out.length || Math.hypot(out[out.length - 1].x - p.x, out[out.length - 1].y - p.y) > 1e-4) {
+        out.push({ x: p.x, y: p.y });
+      }
+    }
+    push(pointAtDistance(pts, from));
+    var acc = 0;
+    for (var i = 1; i < pts.length; i++) {
+      var d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+      if (acc + d > from + 1e-4 && acc + d < to - 1e-4) push(pts[i]);
+      acc += d;
+    }
+    push(pointAtDistance(pts, to));
+    return out.length > 1 ? out : [{ x: pts[0].x, y: pts[0].y }, { x: pts[pts.length - 1].x, y: pts[pts.length - 1].y }];
+  }
+
+  function flowIslandCount(flow) {
+    var seen = Object.create(null), n = 0;
+    for (var i = 0; i < (flow.spans || []).length; i++) {
+      var k = flow.spans[i].face + ':' + flow.spans[i].island;
+      if (!seen[k]) { seen[k] = 1; n++; }
+    }
+    return n;
+  }
+
+  /* The hop is a short dotted arc over the shared pad, not more metal. It is
+     only drawn while the pulse is crossing, so the two island runs never join
+     into one continuous-looking line. */
+  function makeFlowHop(a, b, at, cellD) {
+    var dx = b.x - a.x, dy = b.y - a.y;
+    var d = Math.hypot(dx, dy);
+    var nx, ny;
+    if (d > 0.01) { nx = -dy / d; ny = dx / d; }
+    else { nx = 0; ny = -1; }
+    if (ny > 0) { nx = -nx; ny = -ny; }
+    var bulge = Math.max(cellD * 0.78, d * 1.15);
+    var cx = (a.x + b.x) / 2 + nx * bulge;
+    var cy = (a.y + b.y) / 2 + ny * bulge;
+    var pts = [];
+    for (var i = 0; i <= 12; i++) {
+      var t = i / 12, u = 1 - t;
+      pts.push({
+        x: u * u * a.x + 2 * u * t * cx + t * t * b.x,
+        y: u * u * a.y + 2 * u * t * cy + t * t * b.y
+      });
+    }
+    return { pts: pts, at: at };
+  }
+
+  function buildCellFlowPlan(flow, now) {
+    var cellD = (S.doc.params && S.doc.params.cellD) || 21.2;
+    var spans = flow.spans || [];
+    var runs = [], items = [], i;
+    for (i = 0; i < spans.length; i++) {
+      var sp = spans[i];
+      if (!sp.points || sp.points.length < 2) continue;
+      var pts = [];
+      for (var p = 0; p < sp.points.length; p++) pts.push(localPoint(sp.points[p]));
+      var len = polyLength(pts);
+      if (!(len > 0.05)) continue;
+      var headTrim = i > 0 ? Math.min(cellD * 0.38, len * 0.24) : 0;
+      var tailTrim = i < spans.length - 1 ? Math.min(cellD * 0.38, len * 0.24) : 0;
+      var disp = slicePolyline(pts, headTrim, len - tailTrim);
+      var dlen = polyLength(disp);
+      if (!(dlen > 0.05)) {
+        disp = [];
+        for (var q = 0; q < pts.length; q++) disp.push({ x: pts[q].x, y: pts[q].y });
+        dlen = len;
+      }
+      var island = islandById(sp.face, sp.island);
+      var shape = null, outline = null;
+      var sheet = S.sheets[sp.face];
+      if (sheet) {
+        for (var k = 0; k < sheet.islands.length; k++) {
+          if (String(sheet.islands[k].id) === String(sp.island)) { shape = sheet.islands[k]; break; }
+        }
+      }
+      if (shape) {
+        outline = new Path2D();
+        addLoops(outline, shape.polys);
+      }
+      runs.push({
+        face: sp.face, island: sp.island,
+        name: island ? (island.name || sp.island) : sp.island,
+        pts: pts, disp: disp, path: pathFromPoints(disp), len: dlen,
+        start: disp[0], end: disp[disp.length - 1],
+        junction: pts[pts.length - 1],
+        outline: outline,
+        mirror: sp.face !== S.face
+      });
+    }
+    if (!runs.length) return null;
+
+    items.push({ kind: 'hold', dur: 300, at: runs[0].start, first: true });
+    for (i = 0; i < runs.length; i++) {
+      var dur = Math.max(320, Math.min(1200, Math.round(runs[i].len / 0.16)));
+      items.push({ kind: 'run', dur: dur, run: i });
+      if (i + 1 < runs.length) {
+        var hop = makeFlowHop(runs[i].end, runs[i + 1].start, runs[i].junction, cellD);
+        hop.path = pathFromPoints(hop.pts);
+        items.push({ kind: 'hop', dur: 320, hop: hop, from: i, to: i + 1 });
+      }
+    }
+    items.push({ kind: 'hold', dur: 720, at: runs[runs.length - 1].end, last: true });
+    var total = 0;
+    for (i = 0; i < items.length; i++) total += items[i].dur;
+    return { mode: 'cells', runs: runs, items: items, total: total };
+  }
+
+  function islandCenter(face, id) {
+    var isl = islandById(face, id);
+    if (!isl || !isl.cells.length) return null;
+    var sx = 0, sy = 0, n = 0;
+    for (var i = 0; i < isl.cells.length; i++) {
+      var c = findCell(isl.cells[i]);
+      if (!c) continue;
+      var p = G.cellOnFace(S.doc, S.frame, S.face, c);
+      sx += p.x;
+      sy += p.y;
+      n++;
+    }
+    return n ? { x: sx / n, y: sy / n } : null;
+  }
+
+  function flowEndPoint(term) {
+    if (!term || term.cell === undefined || term.cell === null) return null;
+    var c = findCell(term.cell);
+    if (!c) return null;
+    return G.cellOnFace(S.doc, S.frame, S.face, c);
+  }
+
+  function pushFlowNode(list, node) {
+    if (!node) return;
+    var last = list[list.length - 1];
+    if (last && Math.hypot(last.x - node.x, last.y - node.y) < 0.25) return;
+    list.push(node);
+  }
+
+  /* A second view of the same route: one node at the middle of each island,
+     joined by straight arrows. It is a diagram, not a metal tracing - the
+     pad-to-pad route is still available from the Cell route button. */
+  function buildIslandFlowPlan(flow, now) {
+    var nodes = [], segs = [], items = [], i;
+    var neg = flowEndPoint(flow.neg);
+    pushFlowNode(nodes, neg ? {
+      x: neg.x, y: neg.y, kind: 'end', face: flow.neg.face, sign: 'neg'
+    } : null);
+
+    var seen = Object.create(null);
+    for (i = 0; i < (flow.spans || []).length; i++) {
+      var sp = flow.spans[i];
+      if (!sp) continue;
+      var key = sp.face + ':' + sp.island;
+      if (seen[key]) continue;
+      seen[key] = 1;
+      var at = islandCenter(sp.face, sp.island);
+      if (!at) continue;
+      var isl = islandById(sp.face, sp.island);
+      var shape = null, outline = null;
+      var sheet = S.sheets[sp.face];
+      if (sheet) {
+        for (var k = 0; k < sheet.islands.length; k++) {
+          if (String(sheet.islands[k].id) === String(sp.island)) { shape = sheet.islands[k]; break; }
+        }
+      }
+      if (shape) {
+        outline = new Path2D();
+        addLoops(outline, shape.polys);
+      }
+      pushFlowNode(nodes, {
+        x: at.x, y: at.y, kind: 'island', face: sp.face,
+        island: sp.island, name: isl ? (isl.name || sp.island) : sp.island,
+        outline: outline, mirror: sp.face !== S.face
+      });
+    }
+
+    var pos = flowEndPoint(flow.pos);
+    pushFlowNode(nodes, pos ? {
+      x: pos.x, y: pos.y, kind: 'end', face: flow.pos.face, sign: 'pos'
+    } : null);
+    if (nodes.length < 2) return null;
+
+    for (i = 0; i + 1 < nodes.length; i++) {
+      var a = nodes[i], b = nodes[i + 1];
+      var len = Math.hypot(b.x - a.x, b.y - a.y);
+      if (!(len > 0.1)) continue;
+      var pts = [{ x: a.x, y: a.y }, { x: b.x, y: b.y }];
+      segs.push({
+        a: a, b: b, len: len, pts: pts, path: pathFromPoints(pts),
+        angle: Math.atan2(b.y - a.y, b.x - a.x)
+      });
+    }
+    if (!segs.length) return null;
+
+    items.push({ kind: 'hold', dur: 320, at: nodes[0], first: true });
+    for (i = 0; i < segs.length; i++) {
+      var dur = Math.max(420, Math.min(1200, Math.round(segs[i].len / 0.18)));
+      items.push({ kind: 'seg', dur: dur, seg: i });
+      if (i + 1 < segs.length) {
+        items.push({ kind: 'hold', dur: 140, at: segs[i].b, node: i + 1, land: true });
+      }
+    }
+    items.push({ kind: 'hold', dur: 720, at: segs[segs.length - 1].b, last: true });
+    var total = 0;
+    for (i = 0; i < items.length; i++) total += items[i].dur;
+    return { mode: 'islands', nodes: nodes, segments: segs, items: items, total: total };
+  }
+
+  function buildFlowPlan(flow, now) {
+    return S.flowMode === 'cells' ? buildCellFlowPlan(flow, now) : buildIslandFlowPlan(flow, now);
+  }
+
+  function flowFrameAt(plan, t) {
+    t = ((t % plan.total) + plan.total) % plan.total;
+    var acc = 0;
+    for (var i = 0; i < plan.items.length; i++) {
+      var item = plan.items[i];
+      if (t < acc + item.dur) return { item: item, u: Math.max(0, Math.min(1, (t - acc) / item.dur)) };
+      acc += item.dur;
+    }
+    return { item: plan.items[plan.items.length - 1], u: 1 };
+  }
+
+  function drawFlowChevron(pts, t, alpha, zoom) {
+    if (!pts || pts.length < 2) return;
+    var q = pointAlong(pts, t);
+    var s = 2.4 / zoom;
+    ctx.save();
+    ctx.translate(q.x, q.y);
+    ctx.rotate(q.a);
+    ctx.setLineDash([]);
+    ctx.strokeStyle = hexA(TH.flow, alpha);
+    ctx.lineWidth = 1.15 / zoom;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-s, -s * 0.7);
+    ctx.lineTo(0, 0);
+    ctx.lineTo(-s, s * 0.7);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawFlowJunction(p, alpha, pulse, zoom) {
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = hexA(TH.flow, alpha);
+    ctx.fillStyle = hexA(TH.flow, alpha * 0.9);
+    ctx.lineWidth = 1.1 / zoom;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, (3.1 + (pulse || 0) * 3.2) / zoom, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 0.85 / zoom, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawFlowBase(plan, act) {
+    var zoom = S.zoom, i;
     ctx.save();
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    ctx.strokeStyle = 'rgba(255,86,86,0.20)';
-    ctx.lineWidth = 7 / zoom;
-    ctx.stroke(path);
-    ctx.strokeStyle = '#ff5a5a';
+    for (i = 0; i < plan.runs.length; i++) {
+      var run = plan.runs[i];
+      var same = run.face === S.face;
+      var active = act.item.kind === 'run' && act.item.run === i;
+      ctx.setLineDash([]);
+      if (active) {
+        ctx.strokeStyle = hexA(TH.flow, 0.10);
+        ctx.lineWidth = 8 / zoom;
+        ctx.stroke(run.path);
+      }
+      ctx.strokeStyle = hexA(TH.flow, same ? 0.34 : 0.16);
+      ctx.lineWidth = (same ? 1.5 : 1.05) / zoom;
+      ctx.setLineDash(same ? [4.5 / zoom, 5.2 / zoom] : [1.7 / zoom, 4.6 / zoom]);
+      ctx.lineDashOffset = 0;
+      ctx.stroke(run.path);
+      if (!active) drawFlowChevron(run.disp, 0.55, same ? 0.42 : 0.20, zoom);
+    }
+    for (i = 0; i < plan.items.length; i++) {
+      var item = plan.items[i];
+      if (item.kind !== 'hop') continue;
+      var near = plan.runs[item.from].face === S.face || plan.runs[item.to].face === S.face;
+      var alpha = near ? 0.35 : 0.18, pulse = 0;
+      if (act.item.kind === 'run' && act.item.run === item.from) {
+        var nearEnd = Math.max(0, (act.u - 0.55) / 0.45);
+        alpha = Math.min(0.85, alpha + nearEnd * 0.42);
+        pulse = nearEnd * 0.7;
+      }
+      drawFlowJunction(item.hop.at, alpha, pulse, zoom);
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  function drawFlowIslandNode(node, near, active, now, zoom) {
+    var base = near ? 0.72 : 0.38;
+    var pulse = active ? (0.5 + 0.5 * Math.sin(now * 0.008)) : 0;
+    var r = (5.0 + pulse * 1.6) / zoom;
+    ctx.save();
+    ctx.setLineDash([]);
+    if (active) {
+      ctx.fillStyle = hexA(TH.flow, 0.10);
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, r + 4.5 / zoom, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.strokeStyle = hexA(TH.flow, base + (active ? 0.24 : 0));
+    ctx.lineWidth = (active ? 1.7 : 1.25) / zoom;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = near ? 'rgba(255,255,255,0.88)' : hexA(TH.flow, base * 0.9);
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, 1.15 / zoom, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawFlowIslandBase(plan, act, now) {
+    var zoom = S.zoom, i;
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    for (i = 0; i < plan.segments.length; i++) {
+      var seg = plan.segments[i];
+      var near = seg.a.face === S.face || seg.b.face === S.face;
+      var active = act.item.kind === 'seg' && act.item.seg === i;
+      ctx.setLineDash([]);
+      if (active) {
+        ctx.strokeStyle = hexA(TH.flow, 0.10);
+        ctx.lineWidth = 8 / zoom;
+        ctx.stroke(seg.path);
+      }
+      ctx.strokeStyle = hexA(TH.flow, near ? 0.42 : 0.20);
+      ctx.lineWidth = (near ? 1.55 : 1.05) / zoom;
+      ctx.setLineDash(near ? [5 / zoom, 5.4 / zoom] : [2 / zoom, 4.8 / zoom]);
+      ctx.lineDashOffset = 0;
+      ctx.stroke(seg.path);
+      if (!active) drawFlowChevron(seg.pts, 0.52, near ? 0.45 : 0.22, zoom);
+    }
+    for (i = 0; i < plan.nodes.length; i++) {
+      var node = plan.nodes[i];
+      if (node.kind !== 'island') continue;
+      var near = node.face === S.face;
+      var active = false;
+      if (act.item.kind === 'seg' && (act.item.seg === i - 1 || act.item.seg === i)) active = true;
+      if (act.item.kind === 'hold' && act.item.node === i) active = true;
+      if (active && node.outline) {
+        ctx.save();
+        ctx.setLineDash([]);
+        if (node.mirror) {
+          ctx.translate(S.frame.W, 0);
+          ctx.scale(-1, 1);
+        }
+        ctx.strokeStyle = hexA(TH.flow, 0.14);
+        ctx.lineWidth = 2.8 / zoom;
+        ctx.stroke(node.outline);
+        ctx.restore();
+      }
+      drawFlowIslandNode(node, near, active, now, zoom);
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  function drawFlowIslandSeg(plan, item, u, now) {
+    var seg = plan.segments[item.seg], zoom = S.zoom;
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = hexA(TH.flow, 0.10);
+    ctx.lineWidth = 9 / zoom;
+    ctx.stroke(seg.path);
+    ctx.strokeStyle = hexA(TH.flow, 0.95);
     ctx.lineWidth = 2.4 / zoom;
-    var dash = 5.5 / zoom, gap = 6.5 / zoom, cycle = dash + gap;
-    var phase = REDUCED ? 0 : ((now === undefined ? performance.now() : now) * 0.018) % cycle;
+    var dash = 6.5 / zoom, gap = 5 / zoom, cycle = dash + gap;
     ctx.setLineDash([dash, gap]);
-    ctx.lineDashOffset = -phase;
+    ctx.lineDashOffset = -((now * 0.06) % cycle);
+    ctx.stroke(seg.path);
+    ctx.setLineDash([]);
+    ctx.restore();
+    drawFlowPacket(seg.pts, u, now);
+    var ring = Math.max(0, (u - 0.45) / 0.55);
+    if (ring > 0) {
+      ctx.save();
+      ctx.strokeStyle = hexA(TH.flow, 0.45 * ring);
+      ctx.lineWidth = 1.3 / zoom;
+      ctx.beginPath();
+      ctx.arc(seg.b.x, seg.b.y, (3.4 + ring * 6) / zoom, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function drawFlowPacket(pts, u, now) {
+    var zoom = S.zoom;
+    var total = polyLength(pts);
+    if (!(total > 0)) return;
+    var head = Math.max(0, Math.min(1, u)) * total;
+    var cellD = (S.doc.params && S.doc.params.cellD) || 21.2;
+    var tail = Math.min(total, Math.max(cellD * 1.3, total * 0.30));
+    var n = 9, i;
+    ctx.save();
+    ctx.fillStyle = TH.flow;
+    for (i = n; i >= 1; i--) {
+      var d = head - tail * (i / n);
+      if (d < 0) continue;
+      var q = pointAtDistance(pts, d);
+      ctx.globalAlpha = 0.34 * (1 - i / n);
+      ctx.beginPath();
+      ctx.arc(q.x, q.y, (2.4 - 1.2 * i / n) / zoom, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    var p = pointAtDistance(pts, head);
+    ctx.globalAlpha = 1;
+    var g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 10 / zoom);
+    g.addColorStop(0, hexA(TH.flow, 0.55));
+    g.addColorStop(1, hexA(TH.flow, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 10 / zoom, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = hexA(TH.flow, 0.95);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3.1 / zoom, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 1.25 / zoom, 0, Math.PI * 2);
+    ctx.fill();
+    var s = 3.0 / zoom;
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.a);
+    ctx.strokeStyle = hexA(TH.flow, 0.85);
+    ctx.lineWidth = 1.4 / zoom;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-s, -s * 0.7);
+    ctx.lineTo(0, 0);
+    ctx.lineTo(-s, s * 0.7);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawFlowRun(plan, item, u, now) {
+    var run = plan.runs[item.run];
+    var zoom = S.zoom;
+    if (run.outline) {
+      ctx.save();
+      if (run.mirror) {
+        ctx.translate(S.frame.W, 0);
+        ctx.scale(-1, 1);
+      }
+      var glow = 0.5 + 0.5 * Math.sin(now * 0.006);
+      ctx.strokeStyle = hexA(TH.flow, 0.18 + 0.10 * glow);
+      ctx.lineWidth = 3.0 / zoom;
+      ctx.stroke(run.outline);
+      ctx.restore();
+    }
+    var path = run.path;
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = hexA(TH.flow, 0.10);
+    ctx.lineWidth = 8 / zoom;
+    ctx.stroke(path);
+    ctx.strokeStyle = hexA(TH.flow, 0.95);
+    ctx.lineWidth = 2.1 / zoom;
+    var dash = 6 / zoom, gap = 5.2 / zoom, cycle = dash + gap;
+    ctx.setLineDash([dash, gap]);
+    ctx.lineDashOffset = -((now * 0.06) % cycle);
     ctx.stroke(path);
     ctx.setLineDash([]);
-    var arrow = Math.max(3 / zoom, 1.4);
-    [0.16, 0.5, 0.84].forEach(function (t) {
-      var q = pointAlong(pts, t);
-      ctx.save();
-      ctx.translate(q.x, q.y);
-      ctx.rotate(q.a);
-      ctx.beginPath();
-      ctx.moveTo(arrow, 0);
-      ctx.lineTo(-arrow * 0.8, arrow * 0.62);
-      ctx.lineTo(-arrow * 0.38, 0);
-      ctx.lineTo(-arrow * 0.8, -arrow * 0.62);
-      ctx.closePath();
-      ctx.fillStyle = '#ff5a5a';
-      ctx.fill();
-      ctx.restore();
-    });
     ctx.restore();
+    drawFlowPacket(run.disp, u, now);
+  }
+
+  function drawFlowHop(plan, item, u, now) {
+    var hop = item.hop, zoom = S.zoom;
+    var path = hop.path;
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = hexA(TH.flow, 0.12);
+    ctx.lineWidth = 8 / zoom;
+    ctx.stroke(path);
+    ctx.strokeStyle = hexA(TH.flow, 0.90);
+    ctx.lineWidth = 2.1 / zoom;
+    var dash = 3.2 / zoom, gap = 3.2 / zoom;
+    ctx.setLineDash([dash, gap]);
+    ctx.lineDashOffset = -((now * 0.09) % (dash + gap));
+    ctx.stroke(path);
+    ctx.setLineDash([]);
+    ctx.restore();
+    drawFlowPacket(hop.pts, u, now);
+    ctx.save();
+    ctx.strokeStyle = hexA(TH.flow, 0.55 * (1 - u));
+    ctx.lineWidth = 1.4 / zoom;
+    ctx.beginPath();
+    ctx.arc(hop.at.x, hop.at.y, (3.4 + u * 7.5) / zoom, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawFlowHold(plan, item, u, now) {
+    var p = item.at, zoom = S.zoom;
+    var pulse = (now * 0.0016) % 1;
+    var rings = item.first ? 2 : 1;
+    ctx.save();
+    ctx.lineWidth = 1.4 / zoom;
+    for (var i = 0; i < rings; i++) {
+      var q = (pulse + i * 0.5) % 1;
+      ctx.strokeStyle = hexA(TH.flow, 0.40 * (1 - q));
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, (3.5 + q * 10) / zoom, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = hexA(TH.flow, 0.85);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 1.6 / zoom, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawFlow(now) {
+    var flow = S.flowPath;
+    if (!S.flowOn || !flow || !flow.ok || flow.points.length < 2) return;
+    now = now === undefined ? performance.now() : now;
+    if (S.flowPlanFor !== flow || S.flowPlanFace !== S.face) {
+      S.flowPlan = buildFlowPlan(flow, now);
+      S.flowPlanFor = flow;
+      S.flowPlanFace = S.face;
+      S.flowPlanStart = now;
+    }
+    var plan = S.flowPlan;
+    if (!plan || ((!plan.runs || !plan.runs.length) && (!plan.segments || !plan.segments.length))) return;
+    if (REDUCED) {
+      if (plan.mode === 'islands') drawFlowIslandBase(plan, { item: { kind: 'idle' } }, now);
+      else drawFlowBase(plan, { item: { kind: 'idle' } });
+      return;
+    }
+    var act = flowFrameAt(plan, now - S.flowPlanStart);
+    if (plan.mode === 'islands') {
+      drawFlowIslandBase(plan, act, now);
+      if (act.item.kind === 'seg') drawFlowIslandSeg(plan, act.item, act.u, now);
+      else drawFlowHold(plan, act.item, act.u, now);
+      return;
+    }
+    if (!plan.runs || !plan.runs.length) return;
+    drawFlowBase(plan, act);
+    if (act.item.kind === 'run') drawFlowRun(plan, act.item, act.u, now);
+    else if (act.item.kind === 'hop') drawFlowHop(plan, act.item, act.u, now);
+    else drawFlowHold(plan, act.item, act.u, now);
   }
 
   function drawEndMark(end, sign, color) {
@@ -1195,35 +2283,186 @@
     ctx.restore();
   }
 
-  function drawEnds() {
+  function drawEnds(now) {
     var flow = S.flowPath;
     if (!flow) return;
-    drawEndMark(flow.neg, '\u2212', '#5aa9ff');
-    drawEndMark(flow.pos, '+', '#ff6b6b');
+    drawEndMark(flow.neg, '\u2212', TH.endNeg);
+    drawEndMark(flow.pos, '+', TH.endPos);
+
+    /* a slow halo on each tab, only while the path is live: the ends are the
+       two places the eye needs to find first */
+    if (!REDUCED && S.flowOn && flow.neg && flow.pos) {
+      var phase = ((now === undefined ? performance.now() : now) % 1700) / 1700;
+      var e = 1 - Math.pow(1 - phase, 2);
+      var f = S.frame || (S.frame = G.frameOf(S.doc));
+      var r = S.doc.params.cellD / 2;
+      var zoom = S.zoom;
+      [['neg', TH.endNeg], ['pos', TH.endPos]].forEach(function (pair) {
+        var end = flow[pair[0]];
+        if (!end) return;
+        var p = G.cellOnFace(S.doc, f, S.face, end.cell);
+        ctx.save();
+        ctx.globalAlpha = 0.34 * (1 - e);
+        ctx.strokeStyle = pair[1];
+        ctx.lineWidth = 1.7 / zoom;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 2.5 / zoom + e * 9 / zoom, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      });
+    }
   }
 
-  function drawPrims(src) {
-    var f = S.frame;
-    var pts = [];
-    for (var i = 0; i < src.cells.length; i++) {
-      var c = findCell(src.cells[i]);
-      if (c) pts.push(G.cellOnFace(S.doc, f, S.face, c));
+  /* How often the exact face is re-traced during a stroke. The first frames
+     show the wet preview immediately; the gap then follows the last build's
+     cost, so a 98-cell pack catches up every frame or two while a slow pack
+     leaves the wet preview in place. */
+  function paintPreviewDue(now) {
+    var wet = S.wet;
+    if (!wet || wet.builtGen === wet.gen) return false;
+    if (now - wet.lastBuild < wet.gap) return false;
+    var t0 = performance.now();
+    S.sheets[S.face] = null;
+    try {
+      ensureSheet(S.face);
+    } catch (e) {
+      S.sheets[S.face] = null;
+      return false;
     }
-    if (!pts.length) return;
+    wet.builtGen = wet.gen;
+    wet.lastBuild = performance.now();
+    var cost = wet.lastBuild - t0;
+    /* past this point the exact trace is the thing that would drop the frame;
+       the wet preview is already on screen, so let it carry the stroke and do
+       the exact both-face build once, on release */
+    wet.gap = cost > 30 ? 1e9 : Math.max(16, Math.round(cost * 1.8));
+    return true;
+  }
+
+  /* The exact sheet is stale for the islands this stroke has touched. Hide
+     those islands and draw their current pads and straps instead: one capsule
+     per primitive, all in the same Path2D, then filled once. Overlapping pads
+     and straps become a single silhouette instead of a patchwork of
+     translucent circles, and no contour is needed, which is what keeps the
+     preview cheap on a large island. It is deliberately a little translucent,
+     so it reads as wet paint. */
+  function addCapsule(path, x1, y1, x2, y2, r) {
+    var dx = x2 - x1, dy = y2 - y1;
+    if (dx * dx + dy * dy < 1e-8) {
+      path.moveTo(x1 + r, y1);
+      path.arc(x1, y1, r, 0, Math.PI * 2);
+      return;
+    }
+    var a = Math.atan2(dy, dx);
+    var nx = Math.cos(a + Math.PI / 2) * r;
+    var ny = Math.sin(a + Math.PI / 2) * r;
+    path.moveTo(x1 + nx, y1 + ny);
+    path.lineTo(x2 + nx, y2 + ny);
+    path.arc(x2, y2, r, a + Math.PI / 2, a - Math.PI / 2, true);
+    path.lineTo(x1 - nx, y1 - ny);
+    path.arc(x1, y1, r, a - Math.PI / 2, a + Math.PI / 2, true);
+    path.closePath();
+  }
+
+  function wetPrimPath(isl) {
+    var pts = islandPts(S.face, isl);
+    var path = new Path2D();
+    if (!pts.length) return path;
     var prims = G.islandPrimitives(pts, S.doc.params);
-    ctx.fillStyle = hexA(src.color, 0.35);
-    ctx.strokeStyle = hexA(src.color, 0.9);
-    ctx.lineWidth = 1 / S.zoom;
     for (var k = 0; k < prims.length; k++) {
       var q = prims[k];
+      addCapsule(path, q.x1, q.y1, q.x2, q.y2, q.r);
+    }
+    return path;
+  }
+
+  function drawWetIslands() {
+    var wet = S.wet;
+    if (!wet) return;
+    var list = S.doc.islands[S.face] || [];
+    for (var i = 0; i < list.length; i++) {
+      var isl = list[i];
+      if (!wet.changed[isl.id]) continue;
+      var path = wetPrimPath(isl);
+      ctx.save();
+      ctx.globalAlpha = isl.id === S.sel ? TH.fillSelA + 0.06 : TH.fillA;
+      ctx.fillStyle = isl.color || '#8b98a9';
+      ctx.fill(path);
+      ctx.restore();
+    }
+  }
+
+  /* The trail makes the direction of the stroke legible even when a cell was
+     already in the island and its metal did not change: a quiet accent line
+     through the cells the pointer has painted or erased, a small dot on each,
+     and one big ring on the newest. Erased cells keep a red cross because
+     their metal is already gone from the preview. The line only bridges small
+     gaps, so a jump across the sheet does not draw a false run. */
+  function drawWetTrail(now) {
+    var wet = S.wet;
+    if (!wet || !wet.trail.length) return;
+    var f = S.frame, r = S.doc.params.cellD / 2, zoom = S.zoom;
+    var from = Math.max(0, wet.trail.length - 24);
+    var pts = [];
+    for (var i = from; i < wet.trail.length; i++) {
+      var e = wet.trail[i];
+      var c = findCell(e.id);
+      if (!c) continue;
+      var p = G.cellOnFace(S.doc, f, S.face, c);
+      pts.push({ x: p.x, y: p.y, kind: e.kind, at: i });
+    }
+    if (!pts.length) return;
+    var maxGap = S.doc.params.pitch * 3.2;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    /* the run itself: a quiet line with a dot on every cell, never a ring on
+       every cell - the exact metal already shows what has been painted, and
+       rings on all of them would make one island look like a string of beads */
+    ctx.strokeStyle = TH.accent;
+    ctx.fillStyle = TH.accent;
+    ctx.globalAlpha = 0.42;
+    ctx.lineWidth = 1.15 / zoom;
+    ctx.beginPath();
+    var pen = false;
+    for (i = 0; i < pts.length; i++) {
+      if (!i || Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y) > maxGap) {
+        pen = false;
+      }
+      if (!pen) { ctx.moveTo(pts[i].x, pts[i].y); pen = true; }
+      else ctx.lineTo(pts[i].x, pts[i].y);
+    }
+    ctx.stroke();
+    for (i = 0; i < pts.length; i++) {
       ctx.beginPath();
-      ctx.moveTo(q.x1, q.y1);
-      ctx.lineTo(q.x2, q.y2);
-      ctx.lineCap = 'round';
-      ctx.lineWidth = q.r * 2;
-      ctx.strokeStyle = hexA(src.color, 0.3);
+      ctx.arc(pts[i].x, pts[i].y, 1.35 / zoom, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    /* only the cell under the pointer wears the big ring: it answers "where am
+       I now" without leaving a row of circles behind */
+    var last = pts[pts.length - 1];
+    var pulse = REDUCED ? 1 : 1 + 0.11 * Math.sin(now / 140);
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = last.kind === 'erase' ? TH.pick : TH.accent;
+    ctx.lineWidth = 2.1 / zoom;
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, (r + 4.2 / zoom) * pulse, 0, Math.PI * 2);
+    ctx.stroke();
+    /* erased cells are gone from the preview, so each still gets a small red
+       cross - otherwise the only sign would be a gap in the metal */
+    ctx.strokeStyle = TH.pick;
+    ctx.lineWidth = 1.35 / zoom;
+    for (i = 0; i < pts.length; i++) {
+      if (pts[i].kind !== 'erase') continue;
+      var d = (r + 2.4 / zoom) * 0.55;
+      ctx.beginPath();
+      ctx.moveTo(pts[i].x - d, pts[i].y - d);
+      ctx.lineTo(pts[i].x + d, pts[i].y + d);
+      ctx.moveTo(pts[i].x + d, pts[i].y - d);
+      ctx.lineTo(pts[i].x - d, pts[i].y + d);
       ctx.stroke();
     }
+    ctx.restore();
   }
 
   function hexA(hex, a) {
@@ -1235,6 +2474,260 @@
   /* ------------------------------------------------------------------ */
   /* panels                                                              */
   /* ------------------------------------------------------------------ */
+
+  /* ------------------------------------------------------------------ */
+  /* canvas furniture                                                    */
+  /* ------------------------------------------------------------------ */
+
+  function updateInspector() {
+    var el = $('inspector');
+    if (!el) return;
+    if (!S.hover || !S.doc.cells.length) { el.classList.remove('show'); return; }
+    var c = S.hover;
+    var n = cellIndex(c.id) + 1;
+    if (n < 1) { el.classList.remove('show'); return; }
+    var isl = islandAt(S.face, c.id);
+    var pol = G.polarityOnFace(c, S.face);
+    $('insName').textContent = 'Cell ' + n;
+    $('insPol').textContent = pol;
+    $('insPol').className = pol === '+' ? 'plus' : 'minus';
+    var ys = rowsOf(S.doc), tol = rowTol(), row = '?';
+    for (var i = 0; i < ys.length; i++) if (Math.abs(c.y - ys[i]) <= tol) { row = i + 1; break; }
+    $('insMeta').textContent = (isl ? isl.name : 'no island') + '  \u00b7  ' +
+      faceShort(S.face) + '  \u00b7  row ' + row + '  \u00b7  ' +
+      c.x.toFixed(1) + ', ' + c.y.toFixed(1) + ' mm';
+    $('insDot').style.background = isl ? isl.color : 'var(--dim)';
+    $('insDot').style.boxShadow = '0 0 8px ' + (isl ? isl.color : 'transparent');
+    el.classList.add('show');
+  }
+
+  function syncToolbar() {
+    var u = $('btnUndo'), r = $('btnRedo');
+    if (u) {
+      u.disabled = !HISTORY.length;
+      u.title = HISTORY.length
+        ? 'Undo (Ctrl+Z) - ' + HISTORY.length + (HISTORY.length === 1 ? ' step' : ' steps') + ' available'
+        : 'Nothing to undo yet';
+    }
+    if (r) {
+      r.disabled = !FUTURE.length;
+      r.title = FUTURE.length
+        ? 'Redo (Ctrl+Shift+Z) - ' + FUTURE.length + (FUTURE.length === 1 ? ' step' : ' steps') + ' available'
+        : 'Nothing to redo';
+    }
+    var g = $('btnGrid');
+    if (g) {
+      g.classList.toggle('on', S.grid);
+      g.setAttribute('aria-pressed', S.grid ? 'true' : 'false');
+    }
+    var m = $('btnMini');
+    if (m) {
+      m.classList.toggle('on', S.mini);
+      m.setAttribute('aria-pressed', S.mini ? 'true' : 'false');
+    }
+    var l = $('btnLeft');
+    if (l) {
+      l.classList.toggle('on', S.leftOpen);
+      l.setAttribute('aria-pressed', S.leftOpen ? 'true' : 'false');
+    }
+    var rr = $('btnRight');
+    if (rr) {
+      rr.classList.toggle('on', S.rightOpen);
+      rr.setAttribute('aria-pressed', S.rightOpen ? 'true' : 'false');
+    }
+    syncZoomLabel();
+  }
+
+  function setGrid(on) {
+    S.grid = !!on;
+    saveUi();
+    syncToolbar();
+    S.dirty = true;
+    toast(S.grid ? '10 mm guide grid on' : 'Guide grid off');
+  }
+
+  function setMini(on) {
+    S.mini = !!on;
+    if (mini) mini.hidden = !S.mini;
+    saveUi();
+    syncToolbar();
+    if (S.mini) { resizeMini(); S.dirty = true; }
+    toast(S.mini ? 'Minimap shown' : 'Minimap hidden');
+  }
+
+  /* Hiding a panel is a view choice, not a document edit: keep the point in
+     the middle of the canvas where it was while the stage grows or shrinks. */
+  function setPanel(side, on) {
+    var key = side + 'Open';
+    if (S[key] === !!on) return;
+    var centre = viewCenterSheet();
+    S[key] = !!on;
+    var app = $('app');
+    if (app) app.classList.toggle('no-' + side, !S[key]);
+    saveUi();
+    syncToolbar();
+    setTimeout(function () {
+      resize();
+      resizeMini();
+      centerViewOn(centre, false);
+    }, 340);
+  }
+
+  function toggleTheme() {
+    applyTheme(S.theme === 'day' ? 'midnight' : 'day', true);
+    saveUi();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* layers: help, command palette, toasts                               */
+  /* ------------------------------------------------------------------ */
+
+  var layerTimers = {};
+  function openLayer(el, focus) {
+    if (!el) return;
+    if (layerTimers[el.id]) { clearTimeout(layerTimers[el.id]); layerTimers[el.id] = null; }
+    el.hidden = false;
+    if (focus && focus.focus) { try { focus.focus(); } catch (e) { } }
+    requestAnimationFrame(function () { el.classList.add('show'); });
+  }
+
+  function closeLayer(el) {
+    if (!el || el.hidden) return;
+    el.classList.remove('show');
+    layerTimers[el.id] = setTimeout(function () { el.hidden = true; layerTimers[el.id] = null; }, 190);
+  }
+
+  function helpOpen() { return $('helpModal') && !$('helpModal').hidden; }
+
+  /* Keep Tab inside a modal rather than letting it wander into the canvas
+     behind a dialog. */
+  function trapTab(ev, root) {
+    var nodes = root.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    var list = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (!n.disabled && n.offsetParent !== null) list.push(n);
+    }
+    if (!list.length) return;
+    var first = list[0], last = list[list.length - 1];
+    if (ev.shiftKey && document.activeElement === first) {
+      ev.preventDefault(); last.focus();
+    } else if (!ev.shiftKey && document.activeElement === last) {
+      ev.preventDefault(); first.focus();
+    }
+  }
+  function setHelp(on) {
+    if (on) openLayer($('helpModal'), $('helpClose'));
+    else closeLayer($('helpModal'));
+  }
+
+  function commandItems() {
+    function act(fn) { return fn; }
+    return [
+      { label: 'Undo', hint: 'Ctrl Z', run: act(undo) },
+      { label: 'Redo', hint: 'Ctrl Shift Z', run: act(redo) },
+      { label: 'Fit the sheet to the window', hint: 'G', run: act(fitViewAnimated) },
+      { label: 'Zoom in', hint: '+', run: act(function () { zoomAt(1.25); }) },
+      { label: 'Zoom out', hint: '-', run: act(function () { zoomAt(0.8); }) },
+      { label: 'Zoom to 100% (1:1)', hint: '', run: act(function () { setZoomPercent(100); }) },
+      { label: 'Toggle the 10 mm grid', hint: '', run: act(function () { setGrid(!S.grid); }) },
+      { label: 'Toggle the minimap', hint: '', run: act(function () { setMini(!S.mini); }) },
+      { label: 'Toggle the midnight / daylight theme', hint: '', run: act(toggleTheme) },
+      { label: 'Show or hide the left panel', hint: '[', run: act(function () { setPanel('left', !S.leftOpen); }) },
+      { label: 'Show or hide the right panel', hint: ']', run: act(function () { setPanel('right', !S.rightOpen); }) },
+      { label: 'Fill the grid from the Cells panel', hint: '', keywords: 'layout new pack cells', run: act(function () { $('btnFill').click(); }) },
+      { label: 'Empty the pack', hint: '', keywords: 'clear delete all', run: act(function () { $('btnClear').click(); }) },
+      { label: 'Auto stripe the islands', hint: '', keywords: 'design auto series', run: act(function () { $('btnStripe').click(); }) },
+      { label: 'Turn the pack clockwise', hint: 'R', keywords: 'rotate turn', run: act(function () { rotateLayout(true); }) },
+      { label: 'Turn the pack anticlockwise', hint: '', keywords: 'rotate turn', run: act(function () { rotateLayout(false); }) },
+      { label: 'Add a row', hint: '', keywords: 'cells row grow', run: act(function () { $('btnRowAdd').click(); }) },
+      { label: 'Remove the bottom row', hint: '', keywords: 'cells row shrink', run: act(function () { $('btnRowDel').click(); }) },
+      { label: 'Look at the TOP sheet', hint: 'T', keywords: 'face', run: act(function () { setFace('top'); }) },
+      { label: 'Look at the BOTTOM sheet', hint: 'B', keywords: 'face mirror', run: act(function () { setFace('bottom'); }) },
+      { label: 'See the other sheet through', hint: 'X', keywords: 'ghost view', run: act(function () { setGhost(!S.ghost); }) },
+      { label: 'Show or hide the current flow', hint: 'C', keywords: 'path ends', run: act(function () { setFlow(!S.flowOn); }) },
+      { label: 'Cut a solid plate', hint: '', keywords: 'style cut', run: act(function () { setCut('plate'); }) },
+      { label: 'Cut to the weld lines', hint: '', keywords: 'style strip slot', run: act(function () { setCut('lines'); }) },
+      { label: 'Toggle the cell guide slits', hint: '', keywords: 'mark cut', run: act(function () { setGuides(!S.doc.params.guides); }) },
+      { label: 'Add a new island on this face', hint: '', keywords: 'group paint', run: act(function () { snapshot(); addIsland(S.face); renderPalette(); rebuildAll(); }) },
+      { label: 'Delete the selected group', hint: 'I', keywords: 'island remove', run: act(function () { $('btnRmGroup').click(); }) },
+      { label: 'Clear every island on this face', hint: '', keywords: 'island remove all', run: act(function () { $('btnClearFace').click(); }) },
+      { label: 'Export both sheets as SVG', hint: '', keywords: 'download cut file', run: act(function () { exportSheets('svg', 'both'); }) },
+      { label: 'Export both sheets as DXF', hint: '', keywords: 'download cut file', run: act(function () { exportSheets('dxf', 'both'); }) },
+      { label: 'Export the TOP sheet as SVG', hint: '', keywords: 'download cut file', run: act(function () { exportSheets('svg', 'top'); }) },
+      { label: 'Export the BOTTOM sheet as SVG', hint: '', keywords: 'download cut file', run: act(function () { exportSheets('svg', 'bottom'); }) },
+      { label: 'Export the TOP sheet as DXF', hint: '', keywords: 'download cut file', run: act(function () { exportSheets('dxf', 'top'); }) },
+      { label: 'Export the BOTTOM sheet as DXF', hint: '', keywords: 'download cut file', run: act(function () { exportSheets('dxf', 'bottom'); }) },
+      { label: 'Export the assembly map', hint: '', keywords: 'print pdf', run: act(function () { $('btnPrint').click(); }) },
+      { label: 'Export a design report (Markdown)', hint: '', keywords: 'document summary checks', run: act(exportReport) },
+      { label: 'Export a PNG of this view', hint: '', keywords: 'image download', run: act(exportPNG) },
+      { label: 'Copy the document JSON', hint: '', keywords: 'clipboard share save', run: act(copyJSON) },
+      { label: 'Save the document as .json', hint: '', keywords: 'download file', run: act(function () { $('btnSave').click(); }) },
+      { label: 'Load a .json document', hint: '', keywords: 'open import file', run: act(function () { $('btnLoad').click(); }) },
+      { label: 'Keyboard shortcuts and help', hint: '?', run: act(function () { setHelp(true); }) }
+    ];
+  }
+
+  function cmdSearch(q) {
+    q = (q || '').trim().toLowerCase();
+    var all = commandItems();
+    if (!q) return all;
+    var parts = q.split(/\s+/);
+    return all.filter(function (it) {
+      var hay = (it.label + ' ' + (it.keywords || '') + ' ' + (it.hint || '')).toLowerCase();
+      return parts.every(function (p) { return hay.indexOf(p) >= 0; });
+    });
+  }
+
+  function renderCmd() {
+    var ul = $('cmdList');
+    if (!ul) return;
+    ul.innerHTML = '';
+    S.cmd.items = cmdSearch($('cmdInput').value);
+    if (S.cmd.index >= S.cmd.items.length) S.cmd.index = Math.max(0, S.cmd.items.length - 1);
+    if (!S.cmd.items.length) {
+      var empty = document.createElement('li');
+      empty.className = 'empty';
+      empty.textContent = 'No command matches that.';
+      ul.appendChild(empty);
+      return;
+    }
+    S.cmd.items.forEach(function (it, i) {
+      var li = document.createElement('li');
+      li.className = i === S.cmd.index ? 'sel' : '';
+      li.setAttribute('role', 'option');
+      li.innerHTML = '<span>' + esc(it.label) + '</span>' +
+                     (it.hint ? '<span class="ck">' + esc(it.hint) + '</span>' : '');
+      li.onmouseenter = function () {
+        S.cmd.index = i;
+        Array.prototype.forEach.call(ul.children, function (x, j) { x.classList.toggle('sel', j === i); });
+      };
+      li.onclick = function () { runCmd(i); };
+      ul.appendChild(li);
+    });
+    var sel = ul.children[S.cmd.index];
+    if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+  }
+
+  function openCmd() {
+    S.cmd.open = true;
+    S.cmd.index = 0;
+    $('cmdInput').value = '';
+    openLayer($('paletteModal'), $('cmdInput'));
+    renderCmd();
+  }
+
+  function closeCmd() {
+    S.cmd.open = false;
+    closeLayer($('paletteModal'));
+  }
+
+  function runCmd(i) {
+    var it = S.cmd.items[i];
+    if (!it) return;
+    closeCmd();
+    setTimeout(function () { it.run(); }, 20);
+  }
 
   function updatePanels() {
     /* picks can outlive the cells they point at - fill grid, empty, undo, a
@@ -1260,30 +2753,54 @@
     });
     $('sArea').textContent = (area / 100).toFixed(1) + ' cm2';
     $('sTime').textContent = S.buildMs + ' ms';
+    if ($('islandCount')) $('islandCount').textContent = faceIslands.length;
+    var ft = $('faceTag');
+    if (ft) {
+      ft.textContent = S.face === 'top' ? 'TOP' : 'BOTTOM';
+      ft.title = S.face === 'top' ? 'Editing the top sheet' : 'Editing the mirrored bottom sheet';
+    }
 
     var ul = $('islands');
     ul.innerHTML = '';
     faceIslands.forEach(function (isl) {
       var li = document.createElement('li');
+      li.className = S.sel === isl.id ? 'sel' : '';
       li.innerHTML = '<span class="sw" style="background:' + isl.color + '"></span>' +
                      '<span class="nm">' + esc(isl.name) + '</span>' +
                      '<span class="ct">' + isl.cells.length + '</span>' +
-                     '<span class="x" title="delete">&times;</span>';
+                     '<span class="x" title="delete this island (the cells stay in the pack)">&times;</span>';
       li.onclick = function (ev) {
         if (ev.target.classList.contains('x')) {
           snapshot();
-          S.doc.islands[S.face] = S.doc.islands[S.face].filter(function (x) { return x.id !== isl.id; });
-          if (S.sel === isl.id) S.sel = null;
-          invalidate(S.face);
-          rebuildAll();
+          deleteIsland(S.face, isl.id);
         } else {
-          S.sel = isl.id;
-          renderPalette();
-          S.dirty = true;
+          selectIsland(isl.id);
         }
       };
+      var sw = li.querySelector('.sw');
+      if (sw) {
+        sw.title = 'Click to put this piece in the next unused colour';
+        sw.onclick = function (ev) {
+          ev.stopPropagation();
+          cycleIslandColor(S.face, isl.id);
+        };
+      }
+      li.onmouseenter = function () { S.hiIsland = isl.id; S.dirty = true; };
+      li.onmouseleave = function () { if (S.hiIsland === isl.id) S.hiIsland = null; S.dirty = true; };
+      li.ondblclick = function (ev) {
+        if (ev.target.classList.contains('x') || ev.target.classList.contains('sw')) return;
+        ev.stopPropagation();
+        zoomToIsland(S.face, isl.id);
+      };
+      li.title = isl.name + ' - ' + isl.cells.length + ' cells; double-click to zoom to it';
       ul.appendChild(li);
     });
+    if (!faceIslands.length) {
+      var none = document.createElement('li');
+      none.className = 'note';
+      none.textContent = 'No islands on the ' + S.face + ' sheet.';
+      ul.appendChild(none);
+    }
 
     var checks = $('checks');
     checks.innerHTML = '';
@@ -1294,6 +2811,14 @@
     var errs = sorted.filter(function (d) { return d.level === 'error'; });
     var warns = sorted.filter(function (d) { return d.level === 'warn'; });
     var infos = sorted.filter(function (d) { return d.level === 'info'; });
+    var cc = $('checkCount');
+    if (cc) {
+      cc.textContent = sorted.length;
+      cc.className = 'badge' + (errs.length ? ' bad' : warns.length ? ' warn' : '');
+      cc.title = sorted.length
+        ? errs.length + ' error(s), ' + warns.length + ' warning(s), ' + infos.length + ' note(s)'
+        : 'No problems';
+    }
     var shorts = sorted.filter(function (d) { return d.kind === 'short'; });
     var elecErr = sorted.filter(function (d) {
       return d.level === 'error' && (d.kind === 'short' || d.kind === 'net' || d.kind === 'flow');
@@ -1301,19 +2826,50 @@
     var elecWarn = sorted.filter(function (d) {
       return d.level === 'warn' && (d.kind === 'short' || d.kind === 'net' || d.kind === 'flow');
     });
+    var hs = $('healthStrip');
+    if (hs) {
+      if (errs.length) {
+        hs.className = 'health bad';
+        $('hIco').textContent = '!';
+        $('hTitle').textContent = errs.length + (errs.length === 1 ? ' error' : ' errors') +
+          (warns.length ? ' \u00b7 ' + warns.length + ' warning' + (warns.length === 1 ? '' : 's') : '');
+        $('hSub').textContent = 'Fix these before you cut the sheet.';
+        hs.title = errs[0].text;
+      } else if (warns.length) {
+        hs.className = 'health warn';
+        $('hIco').textContent = '!';
+        $('hTitle').textContent = warns.length + (warns.length === 1 ? ' warning' : ' warnings');
+        $('hSub').textContent = 'The sheets still export; check the list below.';
+        hs.title = warns[0].text;
+      } else if (infos.length) {
+        hs.className = 'health ok';
+        $('hIco').textContent = 'i';
+        $('hTitle').textContent = 'No faults';
+        $('hSub').textContent = infos.length + (infos.length === 1 ? ' note' : ' notes') +
+          ' \u00b7 design information, nothing to fix.';
+        hs.title = infos[0].text;
+      } else {
+        hs.className = 'health ok';
+        $('hIco').textContent = '\u2713';
+        $('hTitle').textContent = 'All clear';
+        $('hSub').textContent = 'No electrical or geometry problems.';
+        hs.title = '';
+      }
+    }
+
     var net = $('sNet');
     if (shorts.length) {
       net.textContent = shorts.length + (shorts.length === 1 ? ' short' : ' shorts');
-      net.className = 'bad';
+      net.className = 'v bad';
     } else if (elecErr.length) {
       net.textContent = elecErr.length + (elecErr.length === 1 ? ' fault' : ' faults');
-      net.className = 'bad';
+      net.className = 'v bad';
     } else if (elecWarn.length) {
       net.textContent = elecWarn.length + (elecWarn.length === 1 ? ' warning' : ' warnings');
-      net.className = 'warn';
+      net.className = 'v warn';
     } else {
       net.textContent = 'no shorts';
-      net.className = 'ok';
+      net.className = 'v ok';
     }
     var t = S.doc.terminals || { neg: null, pos: null };
     function endLabel(term) {
@@ -1357,10 +2913,52 @@
       checks.appendChild(li3);
     }
     renderRows();
+    updateInspector();
   }
 
   function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  /* the palette chip and the island list are two views of the same choice, so
+     both are repainted whenever it changes */
+  function selectIsland(id) {
+    S.sel = id;
+    renderPalette();
+    var lis = $('islands') ? $('islands').children : [];
+    for (var i = 0; i < lis.length; i++) lis[i].classList.remove('sel');
+    var list = S.doc.islands[S.face] || [];
+    for (var j = 0; j < list.length && j < lis.length; j++) {
+      if (list[j].id === id) lis[j].classList.add('sel');
+    }
+    S.dirty = true;
+  }
+
+  /* A colour is only a label, but on a fourteen-piece pack the labels are how
+     you talk about the design. Clicking a swatch steps to the next colour that
+     no other piece is using, so two groups can always be told apart. */
+  function cycleIslandColor(face, id) {
+    var isl = islandById(face, id);
+    if (!isl) return;
+    var used = {};
+    ['top', 'bottom'].forEach(function (f) {
+      (S.doc.islands[f] || []).forEach(function (x) {
+        if (x !== isl) used[x.color] = 1;
+      });
+    });
+    var at = PALETTE.indexOf(isl.color);
+    var pick = null;
+    for (var k = 1; k <= PALETTE.length; k++) {
+      var c = PALETTE[(at + k + PALETTE.length) % PALETTE.length];
+      if (!used[c]) { pick = c; break; }
+    }
+    if (!pick) pick = PALETTE[(at + 1 + PALETTE.length) % PALETTE.length];
+    snapshot();
+    isl.color = pick;
+    rebuildAll();
+    renderPalette();
+    S.dirty = true;
+    toast((isl.name || 'Island') + ' is now ' + pick);
   }
 
   function renderPalette() {
@@ -1370,19 +2968,68 @@
       var b = document.createElement('div');
       b.className = 'chip' + (S.sel === isl.id ? ' on' : '');
       b.style.background = isl.color;
-      b.title = isl.name + ' - ' + isl.cells.length + ' cells';
       b.innerHTML = '<span class="n">' + isl.cells.length + '</span>';
-      b.onclick = function () { S.sel = isl.id; renderPalette(); S.dirty = true; };
+      b.onclick = function () { selectIsland(isl.id); };
+      b.onmouseenter = function () { S.hiIsland = isl.id; S.dirty = true; };
+      b.onmouseleave = function () { if (S.hiIsland === isl.id) S.hiIsland = null; S.dirty = true; };
+      b.ondblclick = function () { zoomToIsland(S.face, isl.id); };
+      b.title = isl.name + ' - ' + isl.cells.length + ' cells; double-click to zoom to it';
       p.appendChild(b);
     });
     var add = document.createElement('div');
     add.className = 'chip';
-    add.style.background = '#2a3038';
-    add.style.color = '#9aa7b6';
+    add.style.background = 'var(--panel2)';
+    add.style.color = 'var(--dim)';
     add.textContent = '+';
     add.title = 'new island';
     add.onclick = function () { snapshot(); addIsland(S.face); renderPalette(); rebuildAll(); };
     p.appendChild(add);
+
+    /* the counterpart of the + chip: it takes the group that is selected, the
+       one ringed in white. With nothing selected there is nothing to take, so
+       the chip is greyed out and says why rather than deleting something else */
+    var del = document.createElement('div');
+    del.id = 'chipDel';
+    del.className = 'chip del';
+    del.style.background = 'var(--panel2)';
+    del.style.color = 'var(--dim)';
+    del.textContent = '\u2212';
+    del.onclick = function () {
+      if (!S.sel) { toast('Select a group first - click one of the coloured groups'); return; }
+      snapshot();
+      deleteIsland(S.face, S.sel);
+    };
+    p.appendChild(del);
+    syncGroupControls();
+  }
+
+  /* Remove group has to know whether there is anything to remove. The
+     selection changes in a dozen places - a new face, a deleted island, undo,
+     a load - and not all of them repaint the palette, so this reads the live
+     document instead of trusting whatever the last repaint saw. */
+  function syncGroupControls() {
+    var target = S.sel ? islandById(S.face, S.sel) : null;
+    if (S.sel && !target) S.sel = null;     /* the selected group is gone */
+    var del = $('chipDel');
+    if (del) {
+      del.classList.toggle('off', !target);
+      del.title = target
+        ? 'delete the selected group, ' + target.name + ' (' + target.cells.length + ' cells)'
+        : 'select a group first';
+    }
+    var rmg = $('btnRmGroup');
+    if (rmg) {
+      rmg.classList.toggle('off', !target);
+      rmg.title = target
+        ? 'Delete the selected group, ' + target.name + ' (' + target.cells.length + ' cells) - the cells stay in the pack'
+        : 'Select a group first';
+    }
+    var rmn = $('rmGroupNote');
+    if (rmn) {
+      rmn.innerHTML = target
+        ? '<b>' + esc(target.name) + '</b> is selected (' + target.cells.length + ' cells). <b>Remove group</b> deletes it; its cells stay in the pack. <b>Ctrl+Z</b> puts it back.'
+        : 'Click a coloured group to select it, then <b>Remove group</b> (<b>&minus;</b> beside the <b>+</b>, or <b>I</b>) deletes it. Its cells stay in the pack.';
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -1415,17 +3062,235 @@
     toast(kind.toUpperCase() + ' written - ' + sheets.length + ' sheet(s)');
   }
 
+  function downloadBlob(name, blob) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1500);
+  }
+
+  /* A picture of what is on screen, at the device pixel ratio the canvas is
+     already rendering, is the fastest way to put a layout in a message. */
+  function exportPNG() {
+    rebuildAll();
+    S.anim = [];        /* a still picture should not catch a half-drawn strap */
+    var name = baseName() + '-' + S.face + '.png';
+    if (!cv.toBlob) { toast('This browser cannot export the canvas'); return; }
+    /* Render the same view at twice the CSS resolution: the canvas is a
+       vector drawing until the last moment, so the extra pixels are real
+       detail rather than an upscaled screenshot. */
+    var scale = Math.min(2, 6000 / Math.max(S.vw, S.vh, 1));
+    if (scale < 1) scale = 1;
+    var cssW = S.vw, cssH = S.vh;
+    cv.width = Math.round(cssW * scale);
+    cv.height = Math.round(cssH * scale);
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    draw(performance.now());
+    var pxW = cv.width, pxH = cv.height;
+    cv.toBlob(function (blob) {
+      resize();
+      draw(performance.now());
+      S.dirty = true;
+      if (!blob) { toast('Could not make the PNG'); return; }
+      downloadBlob(name, blob);
+      toast('PNG written - ' + pxW + ' x ' + pxH + ' px');
+    }, 'image/png');
+  }
+
+  /* A written record of the pack is the thing you hand to the person who
+     asked for it: the layout, the cut numbers, every piece on both faces and
+     the checks that were open when the file was written. */
+  function reportText() {
+    var p = S.doc.params;
+    var f = S.frame || G.frameOf(S.doc);
+    var plus = 0, i;
+    for (i = 0; i < S.doc.cells.length; i++) if (!S.doc.cells[i].flip) plus++;
+    var lines = [];
+    function line(s) { lines.push(s === undefined ? '' : s); }
+    var name = S.doc.name || 'my pack';
+
+    line('# ' + name + ' - design report');
+    line();
+    line('_Generated ' + new Date().toISOString().slice(0, 10) + ' by Battery Architect._');
+    line();
+
+    line('## Layout');
+    line();
+    line('| | |');
+    line('|---|---|');
+    line('| Cells | ' + S.doc.cells.length + ' (' + plus + ' plus-up, ' + (S.doc.cells.length - plus) + ' minus-up) |');
+    line('| Cell type | ' + (S.doc.cellType || 'custom') + ', ' +
+         (isFinite(p.cellD) ? p.cellD : 21.2).toFixed(1) + ' mm |');
+    line('| Packing | ' + (S.doc.arrangement === 'square' ? 'square' : 'staggered') +
+         ', gap ' + (isFinite(p.gap) ? p.gap : 0).toFixed(2) + ' mm, pitch ' +
+         (isFinite(p.pitch) ? p.pitch : (p.cellD || 0)).toFixed(2) + ' mm |');
+    line('| Sheet | ' + f.W.toFixed(1) + ' x ' + f.H.toFixed(1) + ' mm (' + (f.W * f.H / 100).toFixed(1) + ' cm2) |');
+    line('| Turn | ' + (((S.doc.rot || 0) % 360 + 360) % 360) + ' degrees |');
+    line('| Margin | ' + (isFinite(p.margin) ? p.margin : 8) + ' mm |');
+    line();
+
+    line('## Cut');
+    line();
+    line('| | |');
+    line('|---|---|');
+    line('| Style | ' + (p.cut === 'lines'
+      ? 'weld lines at ' + (isFinite(p.lineAngle) ? p.lineAngle : 90) + ' degrees'
+      : 'solid plate') + ' |');
+    line('| Pad / strap | ' + (isFinite(p.padD) ? p.padD : 0).toFixed(1) + ' / ' +
+         (isFinite(p.bridgeW) ? p.bridgeW : 0).toFixed(1) + ' mm |');
+    line('| Kerf | ' + (isFinite(p.kerf) ? p.kerf : 0).toFixed(2) + ' mm |');
+    line('| Precision | ' + (isFinite(p.step) ? p.step : 0.1).toFixed(2) + ' mm |');
+    line('| Guide slits | ' + (p.guides
+      ? 'on - ' + Math.min(p.guideL || 8, G.guideMaxLen(p)).toFixed(1) + ' mm at ' +
+        (isFinite(p.lineAngle) ? p.lineAngle : 0) + ' degrees'
+      : 'off') + ' |');
+    line();
+
+    ['top', 'bottom'].forEach(function (face) {
+      var sh = S.sheets[face];
+      var label = face === 'top' ? 'Top sheet' : 'Bottom sheet (mirrored)';
+      line('## ' + label);
+      line();
+      var islands = S.doc.islands[face] || [];
+      if (!islands.length) {
+        line('_No islands on this face._');
+        line();
+        return;
+      }
+      var area = sh ? sh.islands.reduce(function (a, s) { return a + (s.area || 0); }, 0) : 0;
+      line(islands.length + ' island' + (islands.length === 1 ? '' : 's') +
+           ', ' + (area / 100).toFixed(2) + ' cm2 of metal.');
+      line();
+      line('| Island | Cells | Area (cm2) | Pieces |');
+      line('|---|---:|---:|---:|');
+      islands.forEach(function (isl) {
+        var built = null;
+        if (sh) for (var k = 0; k < sh.islands.length; k++) if (sh.islands[k].id === isl.id) built = sh.islands[k];
+        line('| ' + (isl.name || isl.id) + ' | ' + isl.cells.length + ' | ' +
+             (built ? (built.area / 100).toFixed(2) : '-') + ' | ' +
+             (built ? (built.parts || 1) : '-') + ' |');
+      });
+      line();
+    });
+
+    var t = S.doc.terminals || { neg: null, pos: null };
+    function endName(term) {
+      if (!term) return 'not set';
+      return faceShort(termFace(term)) + ' cell ' + (termCellLabel(term) || '?');
+    }
+    line('## Electrical');
+    line();
+    line('- Negative end: ' + endName(t.neg));
+    line('- Positive end: ' + endName(t.pos));
+    line('- Main path: ' + (S.flowPath && S.flowPath.ok
+      ? S.flowPath.cells.length + ' series cells, ' + S.flowPath.length.toFixed(0) + ' mm of metal'
+      : (t.neg && t.pos ? 'open - no directed path between the ends' : 'not traced')));
+    line();
+
+    var rank = { error: 0, warn: 1, info: 2 };
+    var checks = (S.drc || []).slice().sort(function (a, b) {
+      return (rank[a.level] || 0) - (rank[b.level] || 0);
+    });
+    line('## Checks');
+    line();
+    if (!checks.length) {
+      line('No electrical or geometry problems.');
+    } else {
+      checks.forEach(function (d) {
+        line('- **' + String(d.level || 'info').toUpperCase() + '** - ' +
+             String(d.text || '').replace(/\|/g, '\\|'));
+      });
+    }
+    line();
+    line('## Files');
+    line();
+    line('- ' + baseName() + '.svg / .dxf - both sheets, 1:1 in millimetres');
+    line('- ' + baseName() + '-assembly-map.svg - both faces, 1:1 with a legend');
+    line('- ' + baseName() + '.json - the editable document');
+    line();
+
+    return lines.join('\n');
+  }
+
+  function exportReport() {
+    rebuildAll();
+    download(baseName() + '-report.md', reportText(), 'text/markdown');
+    var n = (S.drc || []).length;
+    toast('Design report written - ' + n + ' check' + (n === 1 ? '' : 's') + ' listed');
+  }
+
+  function copyJSON() {
+    var text = JSON.stringify(S.doc, null, 1);
+    function done() { toast('Document JSON copied - paste it anywhere'); }
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        ta.remove();
+        if (ok) done(); else toast('Could not copy - use Save .json instead', 'warn');
+      } catch (e) {
+        toast('Could not copy - use Save .json instead', 'warn');
+      }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* autosave                                                            */
+  /* ------------------------------------------------------------------ */
+
+  function setSaveState(label, busy) {
+    var el = $('saveState');
+    if (!el) return;
+    el.classList.toggle('saving', !!busy);
+    el.innerHTML = '<i></i>' + label;
+  }
+
+  var saveSoon = 0;
+  function scheduleSave() {
+    if (saveSoon) clearTimeout(saveSoon);
+    saveSoon = setTimeout(function () { saveSoon = 0; persistDoc(); }, 900);
+  }
+
+  function persistDoc(force) {
+    if (!S.unsaved && force !== true) { setSaveState('saved', false); return; }
+    setSaveState('saving', true);
+    try {
+      localStorage.setItem('battery-architect.doc', JSON.stringify(S.doc));
+      S.unsaved = false;
+      setTimeout(function () { if (!S.unsaved) setSaveState('saved', false); }, 220);
+    } catch (e) {
+      setSaveState('not saved', false);
+    }
+  }
+
   /* ------------------------------------------------------------------ */
   /* toast                                                               */
   /* ------------------------------------------------------------------ */
 
   var toastTimer = null;
-  function toast(msg) {
+  function toast(msg, kind) {
     var t = $('toast');
-    t.textContent = msg;
-    t.classList.add('show');
+    if (!t) return;
+    if (!kind) kind = /could not|failed|nothing|no |not /i.test(String(msg)) ? 'warn' : '';
+    t.className = 'show' + (kind ? ' ' + kind : '');
+    t.innerHTML = '<span class="ti" aria-hidden="true"></span>' +
+                  '<span class="tm">' + esc(msg) + '</span>' +
+                  '<span class="tp"></span>';
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2200);
+    toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2400);
   }
 
   /* ------------------------------------------------------------------ */
@@ -1434,6 +3299,7 @@
 
   function setFace(face) {
     S.face = face;
+    S.hiIsland = null;
     $('btnTop').classList.toggle('on', face === 'top');
     $('btnBottom').classList.toggle('on', face === 'bottom');
     var list = S.doc.islands[face];
@@ -1490,7 +3356,9 @@
   }
 
   function paintCursor() {
-    cv.style.cursor = S.terminalPick ? 'copy' : (S.tool === 'paint' ? 'crosshair' : 'cell');
+    cv.style.cursor = S.terminalPick ? 'copy'
+      : S.tool === 'paint' ? 'crosshair'
+      : S.tool === 'island' ? 'pointer' : 'cell';
   }
 
   function setTerminalPick(which) {
@@ -1549,10 +3417,33 @@
   function setFlow(on) {
     S.flowOn = !!on;
     $('flowOn').checked = S.flowOn;
+    S.flowPlanFor = null;
+    S.flowPlanStart = performance.now();
     S.dirty = true;
     if (!S.flowOn) { toast('Current flow hidden'); return; }
     if (!S.flowPath || !S.flowPath.ok) toast('Set both ends to draw the current path');
-    else toast('Current flow shown - dashes run from \u2212 to +');
+    else toast('Current flow shown - the pulse hops island to island');
+  }
+
+  function syncFlowMode() {
+    var islands = $('btnFlowIslands'), cells = $('btnFlowCells');
+    if (islands) islands.classList.toggle('on', S.flowMode !== 'cells');
+    if (cells) cells.classList.toggle('on', S.flowMode === 'cells');
+  }
+
+  function setFlowMode(mode, announce) {
+    S.flowMode = mode === 'cells' ? 'cells' : 'islands';
+    syncFlowMode();
+    S.flowPlanFor = null;
+    S.flowPlanStart = performance.now();
+    S.dirty = true;
+    saveUi();
+    paintFlowPanel();
+    if (announce) {
+      toast(S.flowMode === 'cells'
+        ? 'Flow route: pad to pad'
+        : 'Flow route: island center to island center');
+    }
   }
 
   function polCounts() {
@@ -1686,6 +3577,16 @@
 
     if (!c) return;
 
+    /* the island tool is one click, one whole piece: the cells stay, the
+       metal goes, and one Ctrl+Z puts the piece back */
+    if (ev.button === 0 && S.tool === 'island') {
+      var isl = islandAt(S.face, c.id);
+      if (!isl) { toast('That cell is not in an island on the ' + S.face + ' sheet'); return; }
+      snapshot();
+      deleteIsland(S.face, isl.id);
+      return;
+    }
+
     /* flip is one click, one cell, no drag */
     if (ev.button === 0 && S.tool === 'flip') {
       var label = cellIndex(c.id) + 1;
@@ -1705,6 +3606,10 @@
     S.strokeFrame = frameSig();
     S.dragging = true;
     S.paintMode = eraseMode ? 'erase' : (ev.shiftKey ? 'row' : 'paint');
+    S.wet = {
+      changed: Object.create(null), gen: 0, builtGen: -1,
+      lastBuild: performance.now(), gap: 16, trail: []
+    };
     S.animAnchor = G.cellOnFace(S.doc, S.frame, S.face, c);
     try { cv.setPointerCapture(ev.pointerId); } catch (e) { }
     applyPaint(c, S.paintMode);
@@ -1743,7 +3648,7 @@
     var c = cellAt(pt);
     var changed = (c ? c.id : null) !== (S.hover ? S.hover.id : null);
     S.hover = c;
-    if (changed) S.dirty = true;
+    if (changed) { S.dirty = true; updateInspector(); }
     if (S.dragging && c && S.paintMode !== 'row') {
       applyPaint(c, S.paintMode);
     }
@@ -1752,6 +3657,7 @@
   function endDrag() {
     if (S.dragging) {
       S.dragging = false;
+      S.wet = null;
       finishEdit(S.strokeBefore, S.strokeFrame, null);
       S.strokeBefore = null;
       S.strokeFrame = null;
@@ -1771,17 +3677,39 @@
   }
   cv.addEventListener('pointerup', endDrag);
   cv.addEventListener('pointercancel', endDrag);
+  /* capture should keep the release on the canvas, but alt-tab or a pointer
+     that leaves before capture is set must still land the stroke, or the
+     sheet would stay stale with no button left to release */
+  window.addEventListener('pointerup', function () { if (S.dragging) endDrag(); });
+  window.addEventListener('pointercancel', function () { if (S.dragging) endDrag(); });
+  window.addEventListener('blur', function () { if (S.dragging) endDrag(); });
   cv.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+  cv.addEventListener('pointerleave', function () {
+    if (S.pan || S.dragging || S.marquee) return;
+    if (!S.hover) return;
+    S.hover = null;
+    updateInspector();
+    S.dirty = true;
+  });
 
   cv.addEventListener('wheel', function (ev) {
     ev.preventDefault();
+    if (ev.shiftKey) {
+      S.zoomAnim = null;
+      S.px -= ev.deltaY;
+      S.py -= ev.deltaX;
+      S.dirty = true;
+      return;
+    }
     var r = cv.getBoundingClientRect();
     var mx = ev.clientX - r.left, my = ev.clientY - r.top;
     var before = { x: (mx - S.px) / S.zoom, y: (my - S.py) / S.zoom };
     var k = Math.exp(-ev.deltaY * 0.0015);
-    S.zoom = Math.max(0.4, Math.min(30, S.zoom * k));
+    S.zoomAnim = null;
+    S.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, S.zoom * k));
     S.px = mx - before.x * S.zoom;
     S.py = my - before.y * S.zoom;
+    syncZoomLabel();
     S.dirty = true;
   }, { passive: false });
 
@@ -1790,16 +3718,82 @@
     var tag = el.tagName;
     var range = tag === 'INPUT' && el.type === 'range';
     var typing = (tag === 'INPUT' && !range) || tag === 'SELECT' || tag === 'TEXTAREA';
+
+    /* the command palette owns the keyboard while it is open */
+    if (S.cmd.open) {
+      if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'k' || ev.key === 'K')) {
+        ev.preventDefault(); closeCmd(); return;
+      }
+      if (ev.key === 'Escape') { ev.preventDefault(); closeCmd(); return; }
+      if (ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        S.cmd.index = Math.min(S.cmd.items.length - 1, S.cmd.index + 1);
+        renderCmd();
+        return;
+      }
+      if (ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        S.cmd.index = Math.max(0, S.cmd.index - 1);
+        renderCmd();
+        return;
+      }
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        runCmd(S.cmd.index);
+        return;
+      }
+      if (ev.key === 'Tab') { trapTab(ev, $('paletteModal')); return; }
+      return;
+    }
+    if (helpOpen()) {
+      if (ev.key === 'Escape') { ev.preventDefault(); setHelp(false); }
+      else if (ev.key === 'Tab') trapTab(ev, $('helpModal'));
+      return;
+    }
+
     /* Undo is the one shortcut that has to work straight after a slider drag:
        the thumb still has focus, and the drag is exactly what is being undone.
        Everything else stays out of the way while a field has the keyboard. */
-    if (!typing && (ev.ctrlKey || ev.metaKey) && (ev.key === 'z' || ev.key === 'Z')) {
+    if ((ev.ctrlKey || ev.metaKey) && !typing) {
+      var k = (ev.key || '').toLowerCase();
+      if (k === 'z') {
+        ev.preventDefault();
+        if (ev.shiftKey) redo(); else undo();
+        return;
+      }
+      if (k === 'y') { ev.preventDefault(); redo(); return; }
+    }
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'k' || ev.key === 'K')) {
       ev.preventDefault();
-      undo();
+      if (S.cmd.open) closeCmd(); else openCmd();
+      return;
+    }
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === 's' || ev.key === 'S')) {
+      ev.preventDefault();
+      download(baseName() + '.json', JSON.stringify(S.doc, null, 1), 'application/json');
+      toast('Document saved as ' + baseName() + '.json');
       return;
     }
     if (typing || range) return;
     if (ev.ctrlKey || ev.metaKey) return;
+    if (ev.key === '?') { ev.preventDefault(); setHelp(true); return; }
+    if (ev.key === '+' || ev.key === '=') { ev.preventDefault(); zoomAt(1.25); return; }
+    if (ev.key === '-' || ev.key === '_') { ev.preventDefault(); zoomAt(0.8); return; }
+    if (ev.key === '0') { ev.preventDefault(); fitViewAnimated(); return; }
+    if (ev.key === '1') { ev.preventDefault(); setZoomPercent(100); return; }
+    if (ev.key.indexOf('Arrow') === 0) {
+      ev.preventDefault();
+      var panStep = ev.shiftKey ? 120 : 40;
+      if (ev.key === 'ArrowLeft') S.px += panStep;
+      else if (ev.key === 'ArrowRight') S.px -= panStep;
+      else if (ev.key === 'ArrowUp') S.py += panStep;
+      else if (ev.key === 'ArrowDown') S.py -= panStep;
+      S.zoomAnim = null;
+      S.dirty = true;
+      return;
+    }
+    if (ev.key === '[') { ev.preventDefault(); setPanel('left', !S.leftOpen); return; }
+    if (ev.key === ']') { ev.preventDefault(); setPanel('right', !S.rightOpen); return; }
     if (ev.key === 'f' || ev.key === 'F') {
       if (S.hover) {
         var f0f = frameSig();
@@ -1807,6 +3801,17 @@
         snapshot();
         flipCell(target);
         finishEdit(null, f0f, 'Cell ' + (cellIndex(target.id) + 1) + ' turned over - ' + polCounts());
+      }
+    } else if (ev.key === 'i' || ev.key === 'I') {
+      /* hover a piece and press I: the whole island goes, cells and all metal
+         untouched everywhere else */
+      if (S.hover) {
+        var isl = islandAt(S.face, S.hover.id);
+        if (isl) { snapshot(); deleteIsland(S.face, isl.id); }
+        else toast('That cell is not in an island on the ' + S.face + ' sheet');
+      } else if (S.sel) {
+        snapshot();
+        deleteIsland(S.face, S.sel);
       }
     } else if (ev.key === 'Delete' || ev.key === 'Backspace') {
       /* picked cells go together; with nothing picked, the cell under the
@@ -1832,7 +3837,7 @@
     else if (ev.key === 't' || ev.key === 'T') setFace('top');
     else if (ev.key === 'b' || ev.key === 'B') setFace('bottom');
     else if (ev.key === 'x' || ev.key === 'X') setGhost(!S.ghost);
-    else if (ev.key === 'g' || ev.key === 'G') { fitView(); }
+    else if (ev.key === 'g' || ev.key === 'G') { fitViewAnimated(); }
   });
 
   /* ------------------------------------------------------------------ */
@@ -1841,6 +3846,8 @@
 
   function syncInputs() {
     var p = S.doc.params;
+    var dn = $('docName');
+    if (dn) dn.value = S.doc.name || 'my pack';
     /* the bounds first: a slider clamps what you assign to it, so a loaded
        file cannot leave the thumb at one number and the metal at another */
     $('padD').max = Math.max(8, p.cellD - 0.4);
@@ -1903,6 +3910,7 @@
     normalise(doc);
     S.doc = doc;
     S.hover = null;
+    S.hiIsland = null;
     S.frame = null;
     S.anim = [];        /* undo or a loaded file replaces the layout wholesale */
     S.hiRow = null;
@@ -1912,10 +3920,12 @@
     S.sheets.bottom = null;
     var list = S.doc.islands[S.face] || [];
     S.sel = list.length ? list[0].id : null;
+    S.unsaved = true;
     syncInputs();
     renderPalette();
     fitView();
     rebuildAll();
+    scheduleSave();
   }
 
   /* ------------------------------------------------------------------ */
@@ -1964,6 +3974,8 @@
     $(id).addEventListener('change', function () {
       applyCellSize();
       rebuildAll();
+      S.unsaved = true;
+      scheduleSave();
       S.dirty = true;
     });
   });
@@ -2018,13 +4030,23 @@
     rebuildAll();
   });
 
+  /* Remove group: the named counterpart of the + chip, for the group that is
+     selected. Nothing to remove means nothing happens - it does not fall back
+     to clear the face, which is a different and much bigger edit. */
+  $('btnRmGroup').addEventListener('click', function () {
+    if (!S.sel) { toast('Select a group first - click one of the coloured groups'); return; }
+    snapshot();
+    deleteIsland(S.face, S.sel);
+  });
+
   $('btnTop').addEventListener('click', function () { setFace('top'); });
   $('btnBottom').addEventListener('click', function () { setFace('bottom'); });
 
   var TOOL_NOTES = {
     paint: 'Paint: drag over cells to join them to the highlighted island. <b>Shift</b> paints the whole row, right-click erases.',
     delete: 'Remove: click cells to pick them (click one again to drop it, drag a box on the bare sheet for many) - then <b>Del</b> or the bar. Nothing leaves the pack until you confirm, and one <b>Ctrl+Z</b> puts the lot back.',
-    flip: 'Flip: click a cell to turn it over. Its + moves to the other face, which is how a series chain is built.'
+    flip: 'Flip: click a cell to turn it over. Its + moves to the other face, which is how a series chain is built.',
+    island: 'Island: click a piece to delete that whole island from the ' + S.face + ' sheet. Its cells stay in the pack - the other sheet still welds them - and one <b>Ctrl+Z</b> brings the piece back.'
   };
 
   function setTool(tool) {
@@ -2035,6 +4057,7 @@
     $('btnToolPaint').classList.toggle('on', tool === 'paint');
     $('btnToolDel').classList.toggle('on', tool === 'delete');
     $('btnToolFlip').classList.toggle('on', tool === 'flip');
+    $('btnToolIsland').classList.toggle('on', tool === 'island');
     paintCursor();
     $('toolNote').innerHTML = TOOL_NOTES[tool] || TOOL_NOTES.paint;
     selBar();
@@ -2044,10 +4067,13 @@
   $('btnToolPaint').addEventListener('click', function () { setTool('paint'); });
   $('btnToolDel').addEventListener('click', function () { setTool('delete'); });
   $('btnToolFlip').addEventListener('click', function () { setTool('flip'); });
+  $('btnToolIsland').addEventListener('click', function () { setTool(S.tool === 'island' ? 'paint' : 'island'); });
   $('btnTermNeg').addEventListener('click', function () { setTerminalPick('neg'); });
   $('btnTermPos').addEventListener('click', function () { setTerminalPick('pos'); });
   $('btnTermClear').addEventListener('click', function () { clearTerminals(); });
   $('flowOn').addEventListener('change', function () { setFlow(this.checked); });
+  $('btnFlowIslands').addEventListener('click', function () { setFlowMode('islands', true); });
+  $('btnFlowCells').addEventListener('click', function () { setFlowMode('cells', true); });
   $('btnSelDel').addEventListener('click', function () { removePicked(); });
   $('btnSelClear').addEventListener('click', function () { unpick(); });
   $('btnRotL').addEventListener('click', function () { rotateLayout(false); });
@@ -2393,6 +4419,8 @@
     if (sig === SLIDE.settled && S.sheets.top && S.sheets.bottom) return;
     SLIDE.settled = sig;
     rebuildAll();
+    S.unsaved = true;
+    scheduleSave();
   }
 
   function resetRanges(only) {
@@ -2509,6 +4537,69 @@
   });
 
   /* ------------------------------------------------------------------ */
+  /* new chrome                                                          */
+  /* ------------------------------------------------------------------ */
+
+  $('btnUndo').addEventListener('click', undo);
+  $('btnRedo').addEventListener('click', redo);
+  $('btnZoomOut').addEventListener('click', function () { zoomAt(0.8); });
+  $('btnZoomIn').addEventListener('click', function () { zoomAt(1.25); });
+  $('btnFit').addEventListener('click', fitViewAnimated);
+  $('zoomPct').addEventListener('click', function () { setZoomPercent(100); });
+  $('btnGrid').addEventListener('click', function () { setGrid(!S.grid); });
+  $('btnMini').addEventListener('click', function () { setMini(!S.mini); });
+  $('btnLeft').addEventListener('click', function () { setPanel('left', !S.leftOpen); });
+  $('btnRight').addEventListener('click', function () { setPanel('right', !S.rightOpen); });
+  $('btnTheme').addEventListener('click', toggleTheme);
+  $('btnCmd').addEventListener('click', openCmd);
+  $('btnHelp').addEventListener('click', function () { setHelp(true); });
+  $('helpClose').addEventListener('click', function () { setHelp(false); });
+  $('cmdClose').addEventListener('click', closeCmd);
+  $('helpModal').addEventListener('click', function (ev) { if (ev.target === this) setHelp(false); });
+  $('paletteModal').addEventListener('click', function (ev) { if (ev.target === this) closeCmd(); });
+  $('cmdInput').addEventListener('input', function () { S.cmd.index = 0; renderCmd(); });
+
+  $('btnPng').addEventListener('click', exportPNG);
+  $('btnCopy').addEventListener('click', copyJSON);
+  $('btnReport').addEventListener('click', exportReport);
+
+  $('docName').addEventListener('input', function () {
+    S.doc.name = this.value;
+    S.unsaved = true;
+    setSaveState('edited', true);
+    scheduleSave();
+  });
+  $('docName').addEventListener('change', function () {
+    this.value = (this.value || '').trim() || 'my pack';
+    S.doc.name = this.value;
+  });
+
+  if (mini) {
+    mini.addEventListener('pointerdown', function (ev) {
+      ev.preventDefault();
+      miniDrag = { id: ev.pointerId };
+      try { mini.setPointerCapture(ev.pointerId); } catch (e) { }
+      miniFollow(ev);
+    });
+    mini.addEventListener('pointermove', function (ev) {
+      if (!miniDrag) return;
+      miniFollow(ev);
+    });
+    var miniEnd = function () { miniDrag = null; };
+    mini.addEventListener('pointerup', miniEnd);
+    mini.addEventListener('pointercancel', miniEnd);
+  }
+
+  function miniFollow(ev) {
+    var mm = miniMap();
+    if (!mm) return;
+    var r = mm.r;
+    var pt = { x: (ev.clientX - r.left - mm.ox) / mm.z, y: (ev.clientY - r.top - mm.oy) / mm.z };
+    centerViewOn(pt, false);
+    drawMini(performance.now());
+  }
+
+  /* ------------------------------------------------------------------ */
   /* boot                                                                */
   /* ------------------------------------------------------------------ */
 
@@ -2530,22 +4621,53 @@
     }
     S.sel = S.doc.islands.top.length ? S.doc.islands.top[0].id : null;
 
+    /* view preferences are not part of the document: they belong to this
+       browser, and a pack you share should not carry somebody else's theme */
+    var ui = readUi();
+    S.theme = ui.theme === 'day' ? 'day' : 'midnight';
+    S.grid = ui.grid !== false;
+    S.mini = ui.mini !== false;
+    S.leftOpen = ui.leftOpen !== false;
+    S.rightOpen = ui.rightOpen !== false;
+    S.flowMode = ui.flowMode === 'cells' ? 'cells' : 'islands';
+    applyTheme(S.theme, false);
+    syncFlowMode();
+    $('app').classList.toggle('no-left', !S.leftOpen);
+    $('app').classList.toggle('no-right', !S.rightOpen);
+    if (mini) mini.hidden = !S.mini;
+
     syncInputs();
     setTool('paint');
     resize();
+    resizeMini();
     fitView();
     renderPalette();
     rebuildAll();
+    syncToolbar();
+    persistDoc(true);
 
-    setInterval(function () {
-      try { localStorage.setItem('battery-architect.doc', JSON.stringify(S.doc)); } catch (e) { }
-    }, 4000);
+    setInterval(function () { persistDoc(false); }, 4000);
+    window.addEventListener('beforeunload', persistDoc);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') persistDoc();
+    });
   }
 
-  window.addEventListener('resize', function () { resize(); S.dirty = true; });
+  window.addEventListener('resize', function () {
+    var w = S.vw, h = S.vh;
+    resize();
+    resizeMini();
+    /* keep the middle of the sheet in the middle when the window changes */
+    if (w && h && (Math.abs(w - S.vw) > 1 || Math.abs(h - S.vh) > 1)) {
+      S.px += (S.vw - w) / 2;
+      S.py += (S.vh - h) / 2;
+    }
+    S.dirty = true;
+  });
 
   function loop() {
     /* an animation is the only thing that keeps asking for frames */
+    if (S.zoomAnim) stepViewAnim(performance.now());
     if (S.anim.length) S.dirty = true;
     if (S.flowOn && !REDUCED && S.flowPath && S.flowPath.ok && S.flowPath.points.length > 1) {
       var now = performance.now();
@@ -2560,5 +4682,37 @@
 
   /* A handle for tests/smoke-app.js and for poking at the state from the
      browser console. The app never reads it back. */
-  window.__ba = { state: S, geo: G, rebuild: rebuildAll, tool: setTool, rows: renderRows, anim: drawAnim, frame: draw, ghost: setGhost, guides: setGuides, flow: setFlow };
+  window.__ba = {
+    state: S, geo: G, rebuild: rebuildAll, tool: setTool, rows: renderRows,
+    anim: drawAnim, frame: draw, ghost: setGhost, guides: setGuides, flow: setFlow,
+    flowMode: setFlowMode,
+    theme: applyTheme, grid: setGrid, mini: setMini, panel: setPanel,
+    fit: fitViewAnimated, zoom: zoomAt, undo: undo, redo: redo,
+    help: setHelp, cmd: openCmd, save: persistDoc, report: reportText,
+    flowInfo: function () {
+      var p = S.flowPlan;
+      if (!p) return null;
+      var hops = 0;
+      for (var i = 0; i < p.items.length; i++) if (p.items[i].kind === 'hop') hops++;
+      return {
+        mode: p.mode,
+        runs: p.runs ? p.runs.length : 0,
+        hops: hops,
+        segments: p.segments ? p.segments.length : 0,
+        nodes: p.nodes ? p.nodes.length : 0,
+        total: Math.round(p.total),
+        islands: flowIslandCount(S.flowPath)
+      };
+    },
+    flowNow: function () {
+      var p = S.flowPlan;
+      if (!p || !S.flowOn) return null;
+      var f = flowFrameAt(p, performance.now() - S.flowPlanStart);
+      return {
+        mode: p.mode, kind: f.item.kind, seg: f.item.seg, run: f.item.run,
+        from: f.item.from, to: f.item.to, node: f.item.node,
+        u: Math.round(f.u * 1000) / 1000
+      };
+    }
+  };
 })();

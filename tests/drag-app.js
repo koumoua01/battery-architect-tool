@@ -60,10 +60,12 @@ class CDP {
     return r.result.value;
   }
   mouse(type, x, y) {
+    /* a move during a drag is still a left-button event: CDP needs the held
+       button here, not "none", or the native range sees a hover */
     return this.send('Input.dispatchMouseEvent', {
-      type, x, y, button: type === 'mouseMoved' ? 'none' : 'left',
+      type, x, y, button: 'left',
       buttons: type === 'mouseReleased' ? 0 : 1,
-      clickCount: type === 'mouseMoved' ? 0 : 1, pointerType: 'mouse'
+      clickCount: 1, pointerType: 'mouse'
     });
   }
   key(key, code, vk, modifiers) {
@@ -80,11 +82,11 @@ const VAL = `window.__ba.state.doc.params.padD`;
 const SHOWN = `(function(){ const r = document.getElementById('padD').getBoundingClientRect();
   return { x: r.x, y: r.y, w: r.width, h: r.height, v: parseFloat(document.getElementById('padD').value) }; })()`;
 
-/* the thumb is 14px wide plus a 2px border, so its travel stops that far short
-   of each end of the track */
+/* The native thumb is 14 px wide: its centre travels from 7 px to (width - 7),
+   which is the geometry the browser uses to place it. */
 function thumbX(box) {
-  const lo = 6, hi = 20.8, pad = 9, span = hi - lo;
-  return Math.round(box.x + pad + (box.w - pad * 2) * ((box.v - lo) / span));
+  const lo = 6, hi = 20.8, thumb = 14, span = hi - lo;
+  return Math.round(box.x + thumb / 2 + (box.w - thumb) * ((box.v - lo) / span));
 }
 
 (async () => {
