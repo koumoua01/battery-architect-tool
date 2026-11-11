@@ -746,6 +746,41 @@ ok(warmMs * 4 < freshMs, 'a cached rebuild is far cheaper',
 const svg = G.toSVG([top, bot]);
 ok(svg.indexOf('<svg') > 0, 'svg header');
 ok((svg.match(/Z/g) || []).length >= 14, 'svg has closed paths', (svg.match(/Z/g) || []).length);
+
+/* the svg canvas is trimmed to the metal, not the whole sheet frame: the
+   frame (every cell of both faces + margin) + pad left a blank strip on
+   every side, which wasted paper and tipped tall sheets onto a 2nd page */
+function svgBox(s) {
+  const size = s.match(/width="([\d.]+)mm" height="([\d.]+)mm"/);
+  const tr = s.match(/translate\(([-\d.]+),([-\d.]+)\)/);
+  return { w: parseFloat(size[1]), h: parseFloat(size[2]), tx: parseFloat(tr[1]), ty: parseFloat(tr[2]) };
+}
+function metalBox(sheets) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const sh of sheets) for (const isl of sh.islands)
+    for (const loop of G.islandPolys(isl)) for (const p of loop) {
+      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+    }
+  return { x0, y0, x1, y1 };
+}
+{
+  const mb = metalBox([top, bot]), box = svgBox(svg);
+  ok(Math.abs(box.w - ((mb.x1 - mb.x0) + 12)) < 0.01 && Math.abs(box.h - ((mb.y1 - mb.y0) + 12)) < 0.01,
+    'svg canvas is the metal plus the 6 mm pad, not the frame',
+    box.w.toFixed(1) + 'x' + box.h.toFixed(1) + ' vs frame ' + (frame.W + 12).toFixed(1) + 'x' + (frame.H + 12).toFixed(1));
+  ok(Math.abs(box.tx - (6 - mb.x0)) < 0.01 && Math.abs(box.ty - (6 - mb.y0)) < 0.01,
+    'svg is shifted by one pad, so the top/left blank is just the pad',
+    'translate ' + box.tx.toFixed(2) + ',' + box.ty.toFixed(2));
+  ok(box.h < frame.H + 12 - 1, 'the trimmed svg is shorter than the framed one', (frame.H + 12 - box.h).toFixed(1) + ' mm saved');
+  const solo = svgBox(G.toSVG([top]));
+  const mt = metalBox([top]);
+  ok(Math.abs(solo.w - ((mt.x1 - mt.x0) + 12)) < 0.01 && Math.abs(solo.ty - (6 - mt.y0)) < 0.01,
+    'a single-sheet svg is trimmed to that sheet', solo.w.toFixed(1) + 'x' + solo.h.toFixed(1));
+  const empty = svgBox(G.toSVG([{ face: 'top', W: 100, H: 80, islands: [] }]));
+  ok(empty.w === 112 && empty.h === 92 && empty.tx === 6 && empty.ty === 6,
+    'an svg with no contours falls back to the full frame', empty.w + 'x' + empty.h);
+}
 fs.writeFileSync(path.join(OUT, 'pack.svg'), svg);
 fs.writeFileSync(path.join(OUT, 'pack-top.svg'), G.toSVG([top]));
 fs.writeFileSync(path.join(OUT, 'pack-bottom.svg'), G.toSVG([bot]));

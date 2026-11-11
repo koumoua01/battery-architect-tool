@@ -93,11 +93,16 @@
   button:active { transform: translateY(1px); }
   button.primary { background: #1d4a5e; border-color: #2b6a85; }
   button.primary:hover { background: #23596f; }
+  button.danger { background: #6f2f2f; border-color: #9c4545; color: #ffe0e0; }
+  button.danger:hover { background: #8a3b3b; border-color: #b95454; }
+  button.danger.off { background: var(--panel2); border-color: var(--line); color: #5d6979; cursor: not-allowed; }
+  button.danger.off:hover { background: var(--panel2); border-color: var(--line); }
   .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .btns.one { grid-template-columns: 1fr; }
   .seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-  .seg button { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 6px 4px; }
+  .seg button { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 6px 4px; min-width: 0; font-size: 12px; }
   .seg button.on { background: #1d4a5e; color: #cdeefb; }
+  #btnToolIsland.on { background: #4a2226; color: #ffd9d9; }
   /* a view option, styled as a line rather than a button: it changes what is
      drawn, not what is in the document. A sheet option that lives among the
      sliders borrows the same line, since it is a switch and not a command. */
@@ -121,6 +126,9 @@
   }
   .chip.on { border-color: #fff; box-shadow: 0 0 0 2px #0006; }
   .chip .n { opacity: .75; }
+  .chip.del { color: #9aa7b6; font-size: 15px; }
+  .chip.del:not(.off):hover { background: #6f2f2f !important; color: #ffd9d9; }
+  .chip.del.off { cursor: not-allowed; opacity: .45; }
   #stage { position: relative; background: #101318; overflow: hidden; }
   #cv { display: block; width: 100%; height: 100%; cursor: crosshair; }
   #hint {
@@ -152,11 +160,15 @@
   #flowNote b { color: #b6c2d1; font-weight: 600; }
   ul { list-style: none; margin: 0; padding: 0; }
   #islands li { display: flex; align-items: center; gap: 7px; padding: 3px 0; font-size: 11.5px; }
+  #islands li:not(.note) { cursor: pointer; border-radius: 4px; padding-left: 4px; padding-right: 2px; }
+  #islands li.sel { background: #ffffff0e; }
+  #islands li.sel .nm { color: #fff; }
   #islands .sw { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 12px; }
   #islands .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #islands .ct { color: var(--dim); font-variant-numeric: tabular-nums; }
-  #islands .x { color: var(--dim); cursor: pointer; padding: 0 3px; }
+  #islands .x { color: var(--dim); cursor: pointer; padding: 0 3px; line-height: 1; font-size: 14px; }
   #islands .x:hover { color: var(--bad); }
+  #islands li.note { cursor: default; }
   #rowsList { max-height: 196px; overflow-y: auto; overflow-x: hidden; }
   #rowsList li { display: flex; align-items: center; gap: 5px; padding: 2px 0; font-size: 11.5px; }
   #rowsList li .rl { flex: 0 0 18px; text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
@@ -233,6 +245,7 @@
         <button id="btnToolPaint" class="on" title="Click or drag over cells to add them to the selected island">Paint</button>
         <button id="btnToolDel" title="Click cells to pick them, then Remove - nothing leaves the pack until you confirm">Remove</button>
         <button id="btnToolFlip" title="Click a cell to turn it over">Flip</button>
+        <button id="btnToolIsland" title="Click a piece to delete that whole island - the cells stay in the pack">Island</button>
       </div>
       <div class="note" style="margin-top:6px" id="toolNote">Paint: drag over cells to join them to the highlighted island. <b>Shift</b> paints the whole row, right-click erases.</div>
     </section>
@@ -289,6 +302,10 @@
         <button id="btnStripe">Auto stripe</button>
         <button id="btnClearFace">Clear face</button>
       </div>
+      <div class="btns one" style="margin-top:6px">
+        <button id="btnRmGroup" class="danger">Remove group</button>
+      </div>
+      <div class="note" style="margin-top:6px" id="rmGroupNote">Click a coloured group to select it, then <b>Remove group</b> (<b>&minus;</b> beside the <b>+</b>, or <b>I</b>) deletes it. Its cells stay in the pack.</div>
       <div class="row" style="margin-top:8px"><label>Stripe rows</label><input type="number" id="stripeRows" value="2" step="1" min="1"></div>
     </section>
 
@@ -388,7 +405,7 @@
       <button id="btnSelDel" class="del" title="Take the picked cells out of the pack (Del)">Remove</button>
       <button id="btnSelClear" title="Drop the selection (Esc)">Clear</button>
     </div>
-    <div id="hint"><b>Click</b> paint &middot; <b>Shift+click</b> whole row &middot; <b>Right-click</b> erase &middot; <b>Del</b> remove picked &middot; <b>Esc</b> unpick &middot; <b>F</b> flip cell &middot; <b>R</b> rotate &middot; <b>C</b> current flow &middot; <b>X</b> see through &middot; <b>Ctrl+Z</b> undo &middot; <b>Wheel</b> zoom &middot; <b>Middle-drag</b> pan</div>
+    <div id="hint"><b>Click</b> paint &middot; <b>Shift+click</b> whole row &middot; <b>Right-click</b> erase &middot; <b>I</b> delete island &middot; <b>Del</b> remove picked &middot; <b>Esc</b> unpick &middot; <b>F</b> flip cell &middot; <b>R</b> rotate &middot; <b>C</b> current flow &middot; <b>X</b> see through &middot; <b>Ctrl+Z</b> undo &middot; <b>Wheel</b> zoom &middot; <b>Middle-drag</b> pan</div>
   </main>
 
   <aside id="right">
@@ -915,7 +932,7 @@
       var m = {};
       (S.doc.islands[face] || []).forEach(function (isl) {
         var pts = islandPts(face, isl);
-        m[isl.id] = { pts: pts, prims: pts.length ? G.islandPrimitives(pts, S.doc.params) : [] };
+        m[isl.id] = { pts: pts, color: isl.color, prims: pts.length ? G.islandPrimitives(pts, S.doc.params) : [] };
       });
       out[face] = m;
     }
@@ -938,6 +955,19 @@
     var faces = Object.keys(before);
     for (var i = 0; i < faces.length; i++) {
       var face = faces[i];
+      /* an island that is gone from the document still has to play its metal
+         out: the diff walks the old list as well as the live one */
+      var gone = {};
+      Object.keys(before[face]).forEach(function (id) {
+        var live = false;
+        (S.doc.islands[face] || []).forEach(function (x) { if (x.id === id) live = true; });
+        if (!live) gone[id] = 1;
+      });
+      Object.keys(gone).forEach(function (id) {
+        before[face][id].prims.forEach(function (q) {
+          pushAnim(makeItem(face, q, before[face][id].color || '#8b98a9', false, now, anchor));
+        });
+      });
       (S.doc.islands[face] || []).forEach(function (isl) {
         var oldList = before[face][isl.id] ? before[face][isl.id].prims : [];
         var pts = islandPts(face, isl);
@@ -1123,6 +1153,42 @@
     return true;
   }
 
+  /* Take a whole island off one sheet. The cells stay in the pack - they are
+     still welded by the other sheet - so only the metal goes: every pad and
+     strap of the island shrinks away in place, which is exactly the outline
+     the old build had minus the new, empty one. A pack end that sat on one of
+     its pads goes too, because an end is a pad on an island. */
+  function deleteIsland(face, id) {
+    var list = S.doc.islands[face] || [];
+    var idx = -1;
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) { idx = i; break; }
+    if (idx < 0) return false;
+    var isl = list[idx];
+    var before = REDUCED ? null : snapPrims([face]);
+    var f0 = frameSig();
+    list.splice(idx, 1);
+    var ends = 0;
+    var t = S.doc.terminals;
+    if (t) {
+      ['neg', 'pos'].forEach(function (k) {
+        var e = t[k];
+        if (e && e.face === face && isl.cells.indexOf(e.cell) >= 0) { t[k] = null; ends++; }
+      });
+    }
+    if (S.sel === id) S.sel = list.length ? list[0].id : null;
+    invalidate(face);
+    renderPalette();
+    rebuildAll();
+    animFromDiff(before, f0);
+    S.animAnchor = null;
+    S.dirty = true;
+    toast((isl.name || 'Island') + ' removed from the ' + face + ' sheet' +
+          (isl.cells.length ? ' - its ' + isl.cells.length + (isl.cells.length === 1 ? ' cell stays' : ' cells stay') +
+            ' in the pack, welded by the other sheet' : '') +
+          (ends ? ', and the pack end' + (ends === 1 ? '' : 's') + ' that sat on it' : ''));
+    return true;
+  }
+
   function rotateLayout(clockwise) {
     if (!S.doc.cells.length) { toast('No cells to rotate'); return; }
     snapshot();
@@ -1232,6 +1298,7 @@
     S.flowPath = G.currentPath(S.doc);
     S.drc = G.diagnose(S.doc)
       .concat(gapCheck('top'), gapCheck('bottom'), partsCheck('top'), partsCheck('bottom'));
+    syncGroupControls();
     /* a full rebuild is exactly what "the sheet already matches these slider
        values" means, so the promise is renewed here rather than by whoever
        happened to change a number: the cut style changes two widths without
@@ -1709,25 +1776,28 @@
     ul.innerHTML = '';
     faceIslands.forEach(function (isl) {
       var li = document.createElement('li');
+      li.className = S.sel === isl.id ? 'sel' : '';
       li.innerHTML = '<span class="sw" style="background:' + isl.color + '"></span>' +
                      '<span class="nm">' + esc(isl.name) + '</span>' +
                      '<span class="ct">' + isl.cells.length + '</span>' +
-                     '<span class="x" title="delete">&times;</span>';
+                     '<span class="x" title="delete this island (the cells stay in the pack)">&times;</span>';
+      li.title = isl.name + ' - ' + isl.cells.length + ' cells';
       li.onclick = function (ev) {
         if (ev.target.classList.contains('x')) {
           snapshot();
-          S.doc.islands[S.face] = S.doc.islands[S.face].filter(function (x) { return x.id !== isl.id; });
-          if (S.sel === isl.id) S.sel = null;
-          invalidate(S.face);
-          rebuildAll();
+          deleteIsland(S.face, isl.id);
         } else {
-          S.sel = isl.id;
-          renderPalette();
-          S.dirty = true;
+          selectIsland(isl.id);
         }
       };
       ul.appendChild(li);
     });
+    if (!faceIslands.length) {
+      var none = document.createElement('li');
+      none.className = 'note';
+      none.textContent = 'No islands on the ' + S.face + ' sheet.';
+      ul.appendChild(none);
+    }
 
     var checks = $('checks');
     checks.innerHTML = '';
@@ -1807,6 +1877,20 @@
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  /* the palette chip and the island list are two views of the same choice, so
+     both are repainted whenever it changes */
+  function selectIsland(id) {
+    S.sel = id;
+    renderPalette();
+    var lis = $('islands') ? $('islands').children : [];
+    for (var i = 0; i < lis.length; i++) lis[i].classList.remove('sel');
+    var list = S.doc.islands[S.face] || [];
+    for (var j = 0; j < list.length && j < lis.length; j++) {
+      if (list[j].id === id) lis[j].classList.add('sel');
+    }
+    S.dirty = true;
+  }
+
   function renderPalette() {
     var p = $('palette');
     p.innerHTML = '';
@@ -1816,7 +1900,7 @@
       b.style.background = isl.color;
       b.title = isl.name + ' - ' + isl.cells.length + ' cells';
       b.innerHTML = '<span class="n">' + isl.cells.length + '</span>';
-      b.onclick = function () { S.sel = isl.id; renderPalette(); S.dirty = true; };
+      b.onclick = function () { selectIsland(isl.id); };
       p.appendChild(b);
     });
     var add = document.createElement('div');
@@ -1827,6 +1911,52 @@
     add.title = 'new island';
     add.onclick = function () { snapshot(); addIsland(S.face); renderPalette(); rebuildAll(); };
     p.appendChild(add);
+
+    /* the counterpart of the + chip: it takes the group that is selected, the
+       one ringed in white. With nothing selected there is nothing to take, so
+       the chip is greyed out and says why rather than deleting something else */
+    var del = document.createElement('div');
+    del.id = 'chipDel';
+    del.className = 'chip del';
+    del.style.background = '#2a3038';
+    del.style.color = '#9aa7b6';
+    del.textContent = '\u2212';
+    del.onclick = function () {
+      if (!S.sel) { toast('Select a group first - click one of the coloured groups'); return; }
+      snapshot();
+      deleteIsland(S.face, S.sel);
+    };
+    p.appendChild(del);
+    syncGroupControls();
+  }
+
+  /* Remove group has to know whether there is anything to remove. The
+     selection changes in a dozen places - a new face, a deleted island, undo,
+     a load - and not all of them repaint the palette, so this reads the live
+     document instead of trusting whatever the last repaint saw. */
+  function syncGroupControls() {
+    var target = S.sel ? islandById(S.face, S.sel) : null;
+    if (S.sel && !target) S.sel = null;     /* the selected group is gone */
+    var del = $('chipDel');
+    if (del) {
+      del.classList.toggle('off', !target);
+      del.title = target
+        ? 'delete the selected group, ' + target.name + ' (' + target.cells.length + ' cells)'
+        : 'select a group first';
+    }
+    var rmg = $('btnRmGroup');
+    if (rmg) {
+      rmg.classList.toggle('off', !target);
+      rmg.title = target
+        ? 'Delete the selected group, ' + target.name + ' (' + target.cells.length + ' cells) - the cells stay in the pack'
+        : 'Select a group first';
+    }
+    var rmn = $('rmGroupNote');
+    if (rmn) {
+      rmn.innerHTML = target
+        ? '<b>' + esc(target.name) + '</b> is selected (' + target.cells.length + ' cells). <b>Remove group</b> deletes it; its cells stay in the pack. <b>Ctrl+Z</b> puts it back.'
+        : 'Click a coloured group to select it, then <b>Remove group</b> (<b>&minus;</b> beside the <b>+</b>, or <b>I</b>) deletes it. Its cells stay in the pack.';
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -1934,7 +2064,9 @@
   }
 
   function paintCursor() {
-    cv.style.cursor = S.terminalPick ? 'copy' : (S.tool === 'paint' ? 'crosshair' : 'cell');
+    cv.style.cursor = S.terminalPick ? 'copy'
+      : S.tool === 'paint' ? 'crosshair'
+      : S.tool === 'island' ? 'pointer' : 'cell';
   }
 
   function setTerminalPick(which) {
@@ -2130,6 +2262,16 @@
 
     if (!c) return;
 
+    /* the island tool is one click, one whole piece: the cells stay, the
+       metal goes, and one Ctrl+Z puts the piece back */
+    if (ev.button === 0 && S.tool === 'island') {
+      var isl = islandAt(S.face, c.id);
+      if (!isl) { toast('That cell is not in an island on the ' + S.face + ' sheet'); return; }
+      snapshot();
+      deleteIsland(S.face, isl.id);
+      return;
+    }
+
     /* flip is one click, one cell, no drag */
     if (ev.button === 0 && S.tool === 'flip') {
       var label = cellIndex(c.id) + 1;
@@ -2251,6 +2393,17 @@
         snapshot();
         flipCell(target);
         finishEdit(null, f0f, 'Cell ' + (cellIndex(target.id) + 1) + ' turned over - ' + polCounts());
+      }
+    } else if (ev.key === 'i' || ev.key === 'I') {
+      /* hover a piece and press I: the whole island goes, cells and all metal
+         untouched everywhere else */
+      if (S.hover) {
+        var isl = islandAt(S.face, S.hover.id);
+        if (isl) { snapshot(); deleteIsland(S.face, isl.id); }
+        else toast('That cell is not in an island on the ' + S.face + ' sheet');
+      } else if (S.sel) {
+        snapshot();
+        deleteIsland(S.face, S.sel);
       }
     } else if (ev.key === 'Delete' || ev.key === 'Backspace') {
       /* picked cells go together; with nothing picked, the cell under the
@@ -2462,13 +2615,23 @@
     rebuildAll();
   });
 
+  /* Remove group: the named counterpart of the + chip, for the group that is
+     selected. Nothing to remove means nothing happens - it does not fall back
+     to clear the face, which is a different and much bigger edit. */
+  $('btnRmGroup').addEventListener('click', function () {
+    if (!S.sel) { toast('Select a group first - click one of the coloured groups'); return; }
+    snapshot();
+    deleteIsland(S.face, S.sel);
+  });
+
   $('btnTop').addEventListener('click', function () { setFace('top'); });
   $('btnBottom').addEventListener('click', function () { setFace('bottom'); });
 
   var TOOL_NOTES = {
     paint: 'Paint: drag over cells to join them to the highlighted island. <b>Shift</b> paints the whole row, right-click erases.',
     delete: 'Remove: click cells to pick them (click one again to drop it, drag a box on the bare sheet for many) - then <b>Del</b> or the bar. Nothing leaves the pack until you confirm, and one <b>Ctrl+Z</b> puts the lot back.',
-    flip: 'Flip: click a cell to turn it over. Its + moves to the other face, which is how a series chain is built.'
+    flip: 'Flip: click a cell to turn it over. Its + moves to the other face, which is how a series chain is built.',
+    island: 'Island: click a piece to delete that whole island from the ' + S.face + ' sheet. Its cells stay in the pack - the other sheet still welds them - and one <b>Ctrl+Z</b> brings the piece back.'
   };
 
   function setTool(tool) {
@@ -2479,6 +2642,9 @@
     $('btnToolPaint').classList.toggle('on', tool === 'paint');
     $('btnToolDel').classList.toggle('on', tool === 'delete');
     $('btnToolFlip').classList.toggle('on', tool === 'flip');
+    $('btnToolIsland').classList.toggle('on', tool === 'island');
+    var goal = $('islandGoal');
+    if (goal) goal.classList.toggle('show', tool === 'island');
     paintCursor();
     $('toolNote').innerHTML = TOOL_NOTES[tool] || TOOL_NOTES.paint;
     selBar();
@@ -2488,6 +2654,7 @@
   $('btnToolPaint').addEventListener('click', function () { setTool('paint'); });
   $('btnToolDel').addEventListener('click', function () { setTool('delete'); });
   $('btnToolFlip').addEventListener('click', function () { setTool('flip'); });
+  $('btnToolIsland').addEventListener('click', function () { setTool(S.tool === 'island' ? 'paint' : 'island'); });
   $('btnTermNeg').addEventListener('click', function () { setTerminalPick('neg'); });
   $('btnTermPos').addEventListener('click', function () { setTerminalPick('pos'); });
   $('btnTermClear').addEventListener('click', function () { clearTerminals(); });
@@ -3115,6 +3282,9 @@
   }
   function key(k) {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+  }
+  function undoKey() {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
   }
   function bar() { return document.getElementById('selBar').classList.contains('show'); }
 
@@ -3750,6 +3920,131 @@
   document.getElementById('guideOn').click();
   document.getElementById('btnGeomReset').click();
   P(!B.state.doc.params.guides && slotsOn('top') === 0, 'the slits go away again');
+
+  /* ---------------------------------------------------------------- */
+  /* deleting a whole island                                           */
+  /* ---------------------------------------------------------------- */
+  var face = B.state.face;
+  var islList = function () { return B.state.doc.islands[face]; };
+  var nIsl = islList().length;
+  var nCells = cells();
+  var victim = islList()[0];
+  var victimCells = victim.cells.slice();
+  P(nIsl > 1, 'there are islands to delete', nIsl + ' on ' + face);
+
+  /* the x in the right-hand list takes one island, not the face */
+  var li = document.querySelectorAll('#islands li')[0];
+  var x = li ? li.querySelector('.x') : null;
+  P(!!x, 'every island row has a delete control');
+  if (x) {
+    x.click();
+    P(islList().length === nIsl - 1, 'the x deletes exactly one island',
+      nIsl + ' -> ' + islList().length);
+    P(islList().every(function (i) { return i.id !== victim.id; }), 'the right island went');
+    P(cells() === nCells, 'its cells stay in the pack', nCells + ' cells still');
+    var still = B.state.sheets[face].islands.some(function (i) { return i.id === victim.id; });
+    P(!still, 'no metal is left for it on the sheet');
+
+    undoKey();
+    var back = islList().filter(function (i) { return i.id === victim.id; })[0];
+    P(!!back && back.cells.length === victimCells.length,
+      'one ctrl+z puts the island and its cells back',
+      back ? back.cells.length + ' cells' : 'not restored');
+  }
+
+  /* the island tool: one click on a piece removes the whole piece */
+  document.getElementById('btnToolIsland').click();
+  P(document.getElementById('btnToolIsland').classList.contains('on') &&
+    !document.getElementById('btnToolPaint').classList.contains('on'),
+    'the island tool takes over from paint');
+  var probe = centreCell();
+  var before2 = islList().length;
+  if (probe) {
+    var owner = islList().filter(function (i) { return i.cells.indexOf(probe.cell.id) >= 0; })[0];
+    P(!!owner, 'the probed cell belongs to an island');
+    if (owner) {
+      press(probe.x, probe.y);
+      P(islList().length === before2 - 1, 'a click with the island tool deletes that island',
+        before2 + ' -> ' + islList().length);
+      P(islList().every(function (i) { return i.id !== owner.id; }), 'and it is the piece that was clicked');
+      P(cells() === nCells, 'and still leaves the cells', cells() + ' cells');
+      undoKey();
+      P(islList().length === before2, 'which ctrl+z undoes', islList().length + ' islands');
+    }
+  } else {
+    P(false, 'found a cell to click with the island tool');
+  }
+  document.getElementById('btnToolPaint').click();
+
+  /* a pack end on the island goes with it, rather than pointing at a pad that
+     is no longer welded on that sheet */
+  var endIsl = islList()[0];
+  if (endIsl && endIsl.cells.length) {
+    B.state.doc.terminals = { neg: { face: face, cell: endIsl.cells[0] }, pos: null };
+    B.rebuild();
+    document.querySelectorAll('#islands li')[0].querySelector('.x').click();
+    P(!B.state.doc.terminals.neg, 'a pack end on the deleted island is cleared with it');
+    undoKey();
+    P(!!(B.state.doc.terminals && B.state.doc.terminals.neg), 'and comes back on undo');
+    B.state.doc.terminals = { neg: null, pos: null };
+    B.rebuild();
+  }
+
+  /* the Remove group button: it acts on the selected group, and only then */
+  var rm = document.getElementById('btnRmGroup');
+  P(!!rm, 'there is a Remove group button beside the palette');
+  if (rm) {
+    var chips = document.querySelectorAll('#palette .chip');
+    var delChip = document.getElementById('chipDel');
+    P(!!delChip, 'there is a minus chip beside the plus one');
+
+    /* with nothing selected, Remove group must not delete anything, and must
+       not fall back to clearing the whole face */
+    var keepSel = B.state.sel;
+    var lst = islList();
+    /* poke the state the way a fresh face would: no selection */
+    var selBefore = B.state.sel;
+    B.state.sel = null;
+    B.rebuild();
+    var nBefore = islList().length;
+    rm.click();
+    P(islList().length === nBefore, 'Remove group does nothing with no group selected',
+      nBefore + ' -> ' + islList().length);
+    P(rm.classList.contains('off'), 'and the button is greyed out');
+    B.state.sel = selBefore;
+    B.rebuild();
+
+    /* now select a group and use the button */
+    var pick = islList()[0];
+    var listsBefore = islList().length;
+    var cellsBefore = cells();
+    /* select it the way the user does: click its chip */
+    var chipIdx = islList().indexOf(pick);
+    document.querySelectorAll('#palette .chip')[chipIdx].click();
+    P(B.state.sel === pick.id, 'clicking a group selects it');
+    P(!rm.classList.contains('off'), 'and the Remove group button comes alive');
+    rm.click();
+    P(islList().length === listsBefore - 1, 'Remove group deletes the selected group',
+      listsBefore + ' -> ' + islList().length);
+    P(islList().every(function (i) { return i.id !== pick.id; }), 'and it is the selected one');
+    P(cells() === cellsBefore, 'the cells stay in the pack', cells() + ' cells');
+    undoKey();
+    P(islList().length === listsBefore, 'one ctrl+z puts the group back', islList().length + ' groups');
+
+    /* the minus chip does the same job */
+    if (delChip) {
+      var c2 = islList()[0];
+      document.querySelectorAll('#palette .chip')[0].click();
+      var n2 = islList().length;
+      delChip.click();
+      P(islList().length === n2 - 1, 'the minus chip deletes the selected group too',
+        n2 + ' -> ' + islList().length);
+      P(islList().every(function (i) { return i.id !== c2.id; }), 'and it is the right one');
+      undoKey();
+      P(islList().length === n2, 'and that undoes too', islList().length + ' groups');
+    }
+    B.state.sel = keepSel;
+  }
 
   var fails = out.filter(function (l) { return l.indexOf('FAIL') === 0; }).length;
   document.title = fails ? 'SMOKE FAIL' : 'SMOKE PASS';

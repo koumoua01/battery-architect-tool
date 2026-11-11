@@ -454,8 +454,17 @@ by both writers, and free of a re-trace when they are switched on.
 
 `tests/smoke-app.js` writes a copy of the app with a script that drives the
 real buttons — turn, pick cells and remove them, undo, paint, the row buttons,
-the flip tool — then reads the result out of the page. Run it in a headless
-browser and look for the `PASS` / `FAIL` block:
+the flip tool, deleting a whole island — then reads the result out of the page.
+Run it in a headless browser and look for the `PASS` / `FAIL` block:
+
+```
+node tests/smoke-app.js
+node tests/run-smoke.js
+```
+
+`tests/run-smoke.js` starts its own headless Chrome and prints the block
+directly. The `--dump-dom` route also works, but the page must have finished by
+the time the DOM is dumped, or the `<pre>` with the results is not there yet:
 
 ```
 chrome --headless=new --dump-dom file:///.../out/app-smoke.html > out/app-smoke.txt

@@ -1651,11 +1651,43 @@
       W = Math.max(W, sheets[i].W);
       H = Math.max(H, sheets[i].H);
     }
-    var tw = W + pad * 2, th = H + pad * 2;
+    /* Trim the canvas to the metal that is actually being exported, instead
+       of the whole sheet frame. The frame is sized from every cell on both
+       faces plus the sheet margin, so a single face whose edge row belongs
+       to the other sheet carries a full empty strip along that edge - and
+       even a face that does reach the edge carries margin + pad of white
+       on all four sides. That white is wasted paper when the file is
+       printed 1:1 and, on a tall sheet, it is what tips the last row onto
+       a second page. The bounding box is taken over every sheet in this
+       export (not per sheet), so "both" still draws top and bottom in the
+       same coordinates and they stay aligned; the shift is a pure
+       translation, so the scale stays 1:1. `pad` is kept as the only
+       surrounding white, which is also what keeps the 0.1 mm stroke from
+       being clipped by the viewBox. An export with no contours at all
+       falls back to the full frame. */
+    var bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+    for (var bi = 0; bi < sheets.length; bi++) {
+      for (var bk = 0; bk < sheets[bi].islands.length; bk++) {
+        var bp = islandPolys(sheets[bi].islands[bk]);
+        for (var bj = 0; bj < bp.length; bj++) {
+          for (var bv = 0; bv < bp[bj].length; bv++) {
+            if (bp[bj][bv].x < bx0) bx0 = bp[bj][bv].x;
+            if (bp[bj][bv].y < by0) by0 = bp[bj][bv].y;
+            if (bp[bj][bv].x > bx1) bx1 = bp[bj][bv].x;
+            if (bp[bj][bv].y > by1) by1 = bp[bj][bv].y;
+          }
+        }
+      }
+    }
+    var tx = pad, ty = pad, tw = W + pad * 2, th = H + pad * 2;
+    if (isFinite(bx0)) {
+      tx = pad - bx0; ty = pad - by0;
+      tw = (bx1 - bx0) + pad * 2; th = (by1 - by0) + pad * 2;
+    }
     var out = [];
     out.push('<?xml version="1.0" encoding="UTF-8"?>');
     out.push('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="' + tw.toFixed(3) + 'mm" height="' + th.toFixed(3) + 'mm" viewBox="0 0 ' + tw.toFixed(3) + ' ' + th.toFixed(3) + '">');
-    out.push('<g transform="translate(' + pad + ',' + pad + ')">');
+    out.push('<g transform="translate(' + tx.toFixed(3) + ',' + ty.toFixed(3) + ')">');
     for (var s = 0; s < sheets.length; s++) {
       var sh = sheets[s];
       var name = sh.face === 'bottom' ? 'BOTTOM' : 'TOP';

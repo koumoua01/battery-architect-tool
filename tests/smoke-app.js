@@ -124,6 +124,9 @@ const harness = `
   function key(k) {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
   }
+  function undoKey() {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+  }
   function bar() { return document.getElementById('selBar').classList.contains('show'); }
 
   var n0 = cells(), d0 = dims();
@@ -758,6 +761,131 @@ const harness = `
   document.getElementById('guideOn').click();
   document.getElementById('btnGeomReset').click();
   P(!B.state.doc.params.guides && slotsOn('top') === 0, 'the slits go away again');
+
+  /* ---------------------------------------------------------------- */
+  /* deleting a whole island                                           */
+  /* ---------------------------------------------------------------- */
+  var face = B.state.face;
+  var islList = function () { return B.state.doc.islands[face]; };
+  var nIsl = islList().length;
+  var nCells = cells();
+  var victim = islList()[0];
+  var victimCells = victim.cells.slice();
+  P(nIsl > 1, 'there are islands to delete', nIsl + ' on ' + face);
+
+  /* the x in the right-hand list takes one island, not the face */
+  var li = document.querySelectorAll('#islands li')[0];
+  var x = li ? li.querySelector('.x') : null;
+  P(!!x, 'every island row has a delete control');
+  if (x) {
+    x.click();
+    P(islList().length === nIsl - 1, 'the x deletes exactly one island',
+      nIsl + ' -> ' + islList().length);
+    P(islList().every(function (i) { return i.id !== victim.id; }), 'the right island went');
+    P(cells() === nCells, 'its cells stay in the pack', nCells + ' cells still');
+    var still = B.state.sheets[face].islands.some(function (i) { return i.id === victim.id; });
+    P(!still, 'no metal is left for it on the sheet');
+
+    undoKey();
+    var back = islList().filter(function (i) { return i.id === victim.id; })[0];
+    P(!!back && back.cells.length === victimCells.length,
+      'one ctrl+z puts the island and its cells back',
+      back ? back.cells.length + ' cells' : 'not restored');
+  }
+
+  /* the island tool: one click on a piece removes the whole piece */
+  document.getElementById('btnToolIsland').click();
+  P(document.getElementById('btnToolIsland').classList.contains('on') &&
+    !document.getElementById('btnToolPaint').classList.contains('on'),
+    'the island tool takes over from paint');
+  var probe = centreCell();
+  var before2 = islList().length;
+  if (probe) {
+    var owner = islList().filter(function (i) { return i.cells.indexOf(probe.cell.id) >= 0; })[0];
+    P(!!owner, 'the probed cell belongs to an island');
+    if (owner) {
+      press(probe.x, probe.y);
+      P(islList().length === before2 - 1, 'a click with the island tool deletes that island',
+        before2 + ' -> ' + islList().length);
+      P(islList().every(function (i) { return i.id !== owner.id; }), 'and it is the piece that was clicked');
+      P(cells() === nCells, 'and still leaves the cells', cells() + ' cells');
+      undoKey();
+      P(islList().length === before2, 'which ctrl+z undoes', islList().length + ' islands');
+    }
+  } else {
+    P(false, 'found a cell to click with the island tool');
+  }
+  document.getElementById('btnToolPaint').click();
+
+  /* a pack end on the island goes with it, rather than pointing at a pad that
+     is no longer welded on that sheet */
+  var endIsl = islList()[0];
+  if (endIsl && endIsl.cells.length) {
+    B.state.doc.terminals = { neg: { face: face, cell: endIsl.cells[0] }, pos: null };
+    B.rebuild();
+    document.querySelectorAll('#islands li')[0].querySelector('.x').click();
+    P(!B.state.doc.terminals.neg, 'a pack end on the deleted island is cleared with it');
+    undoKey();
+    P(!!(B.state.doc.terminals && B.state.doc.terminals.neg), 'and comes back on undo');
+    B.state.doc.terminals = { neg: null, pos: null };
+    B.rebuild();
+  }
+
+  /* the Remove group button: it acts on the selected group, and only then */
+  var rm = document.getElementById('btnRmGroup');
+  P(!!rm, 'there is a Remove group button beside the palette');
+  if (rm) {
+    var chips = document.querySelectorAll('#palette .chip');
+    var delChip = document.getElementById('chipDel');
+    P(!!delChip, 'there is a minus chip beside the plus one');
+
+    /* with nothing selected, Remove group must not delete anything, and must
+       not fall back to clearing the whole face */
+    var keepSel = B.state.sel;
+    var lst = islList();
+    /* poke the state the way a fresh face would: no selection */
+    var selBefore = B.state.sel;
+    B.state.sel = null;
+    B.rebuild();
+    var nBefore = islList().length;
+    rm.click();
+    P(islList().length === nBefore, 'Remove group does nothing with no group selected',
+      nBefore + ' -> ' + islList().length);
+    P(rm.classList.contains('off'), 'and the button is greyed out');
+    B.state.sel = selBefore;
+    B.rebuild();
+
+    /* now select a group and use the button */
+    var pick = islList()[0];
+    var listsBefore = islList().length;
+    var cellsBefore = cells();
+    /* select it the way the user does: click its chip */
+    var chipIdx = islList().indexOf(pick);
+    document.querySelectorAll('#palette .chip')[chipIdx].click();
+    P(B.state.sel === pick.id, 'clicking a group selects it');
+    P(!rm.classList.contains('off'), 'and the Remove group button comes alive');
+    rm.click();
+    P(islList().length === listsBefore - 1, 'Remove group deletes the selected group',
+      listsBefore + ' -> ' + islList().length);
+    P(islList().every(function (i) { return i.id !== pick.id; }), 'and it is the selected one');
+    P(cells() === cellsBefore, 'the cells stay in the pack', cells() + ' cells');
+    undoKey();
+    P(islList().length === listsBefore, 'one ctrl+z puts the group back', islList().length + ' groups');
+
+    /* the minus chip does the same job */
+    if (delChip) {
+      var c2 = islList()[0];
+      document.querySelectorAll('#palette .chip')[0].click();
+      var n2 = islList().length;
+      delChip.click();
+      P(islList().length === n2 - 1, 'the minus chip deletes the selected group too',
+        n2 + ' -> ' + islList().length);
+      P(islList().every(function (i) { return i.id !== c2.id; }), 'and it is the right one');
+      undoKey();
+      P(islList().length === n2, 'and that undoes too', islList().length + ' groups');
+    }
+    B.state.sel = keepSel;
+  }
 
   var fails = out.filter(function (l) { return l.indexOf('FAIL') === 0; }).length;
   document.title = fails ? 'SMOKE FAIL' : 'SMOKE PASS';
