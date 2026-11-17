@@ -118,8 +118,9 @@ const STATE = '(function(){ var s=window.__ba.state; return {dragging:s.dragging
     ok(live.t0.indexOf(cell) >= 0 && live.t1.indexOf(cell) < 0,
       'the cell has already joined the selected island in the document',
       live.t0.length + ' / ' + live.t1.length);
-    ok(live.t0.length === 21, 'all six dragged cells are in the island while the button is down',
-      live.t0.length + ' cells');
+    ok(live.t0.length === boot.t0.length + pts.length && live.t1.length === boot.t1.length - pts.length,
+      'every dragged cell is in the island while the button is down',
+      live.t0.length + ' / ' + live.t1.length + ' cells');
 
     const shot = await c.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(ROOT, 'out', 'ui-paint.png'), Buffer.from(shot.data, 'base64'));
@@ -131,14 +132,15 @@ const STATE = '(function(){ var s=window.__ba.state; return {dragging:s.dragging
     ok(!end.dragging && !end.wet, 'the stroke ends and the preview is put away');
     ok(end.sheet && end.top > 0 && end.bottom > 0, 'both faces are exact after the release',
       end.top + ' / ' + end.bottom + ' mm2');
-    ok(end.t0.length === 21, 'the painted cells stay in the island after the release');
+    ok(end.t0.length === boot.t0.length + pts.length, 'the painted cells stay in the island after the release',
+      end.t0.length + ' / ' + end.t1.length + ' cells');
 
     await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'z', code: 'KeyZ', windowsVirtualKeyCode: 90, nativeVirtualKeyCode: 90, modifiers: 2 });
     await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'z', code: 'KeyZ', windowsVirtualKeyCode: 90, nativeVirtualKeyCode: 90, modifiers: 2 });
     await sleep(300);
     const undone = await c.ev(STATE);
-    ok(undone.t0.length === 15 && undone.t1.length === 15, 'one Ctrl+Z puts the whole stroke back',
-      undone.t0.length + ' / ' + undone.t1.length);
+    ok(undone.t0.length === boot.t0.length && undone.t1.length === boot.t1.length,
+      'one Ctrl+Z puts the whole stroke back', undone.t0.length + ' / ' + undone.t1.length);
 
     /* right-drag erase: the donor island shrinks under the pointer too */
     const beforeErase = await c.ev(PIXEL + '(' + JSON.stringify(pts[0].id) + ')');
@@ -153,7 +155,7 @@ const STATE = '(function(){ var s=window.__ba.state; return {dragging:s.dragging
     const erased = await c.ev(PIXEL + '(' + JSON.stringify(pts[0].id) + ')');
     const gone = Math.hypot(erased[0] - beforeErase[0], erased[1] - beforeErase[1], erased[2] - beforeErase[2]);
     ok(erasing.dragging && erasing.wet, 'a right drag is a live erase stroke too');
-    ok(erasing.t1.length === 12, 'the erased cells leave the donor island while the button is down',
+    ok(erasing.t1.length === boot.t1.length - 3, 'the erased cells leave the donor island while the button is down',
       erasing.t1.length + ' cells');
     ok(gone > 18, 'the erased pad has already lost its colour', 'delta ' + gone.toFixed(1));
 
@@ -165,14 +167,14 @@ const STATE = '(function(){ var s=window.__ba.state; return {dragging:s.dragging
     await c.mouse('mouseReleased', pts[2].x, pts[2].y, 'right', 0);
     await sleep(400);
     const erasedEnd = await c.ev(STATE);
-    ok(!erasedEnd.dragging && !erasedEnd.wet && erasedEnd.t1.length === 12,
+    ok(!erasedEnd.dragging && !erasedEnd.wet && erasedEnd.t1.length === boot.t1.length - 3,
       'the erase is committed once, on release');
 
     await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'z', code: 'KeyZ', windowsVirtualKeyCode: 90, nativeVirtualKeyCode: 90, modifiers: 2 });
     await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'z', code: 'KeyZ', windowsVirtualKeyCode: 90, nativeVirtualKeyCode: 90, modifiers: 2 });
     await sleep(300);
     const erasedUndo = await c.ev(STATE);
-    ok(erasedUndo.t1.length === 15, 'one Ctrl+Z puts the erased cells back', erasedUndo.t1.length + ' cells');
+    ok(erasedUndo.t1.length === boot.t1.length, 'one Ctrl+Z puts the erased cells back', erasedUndo.t1.length + ' cells');
 
     c.ws.close();
   } finally {

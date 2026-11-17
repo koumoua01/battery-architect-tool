@@ -152,22 +152,160 @@
   /* document                                                            */
   /* ------------------------------------------------------------------ */
 
+  /* The pack a first-time visitor lands on: the reference 14-row staggered
+     layout, already striped into its top and bottom islands, with both
+     terminals placed. It is a document this app exported, kept here as a
+     literal so a browser that has never saved anything opens on a finished
+     pack instead of an empty sheet. defaultDoc() hands out a copy - nothing
+     may mutate this object. */
+  var DEFAULT_PACK = {
+    version: 1,
+    name: 'my pack',
+    cellType: 'custom',
+    arrangement: 'hex',
+    rot: 180,
+    cells: [
+      { id: 'c1', x: 204, y: 382.7832, flip: false },
+      { id: 'c2', x: 170, y: 382.7832, flip: false },
+      { id: 'c3', x: 136, y: 382.7832, flip: true },
+      { id: 'c4', x: 102, y: 382.7832, flip: true },
+      { id: 'c5', x: 68, y: 382.7832, flip: true },
+      { id: 'c6', x: 34, y: 382.7832, flip: true },
+      { id: 'c8', x: 221, y: 353.3384, flip: false },
+      { id: 'c9', x: 187, y: 353.3384, flip: false },
+      { id: 'c10', x: 153, y: 353.3384, flip: true },
+      { id: 'c11', x: 119, y: 353.3384, flip: true },
+      { id: 'c12', x: 85, y: 353.3384, flip: false },
+      { id: 'c13', x: 51, y: 353.3384, flip: true },
+      { id: 'c14', x: 17, y: 353.3384, flip: true },
+      { id: 'c15', x: 238, y: 323.8935, flip: true },
+      { id: 'c16', x: 204, y: 323.8935, flip: true },
+      { id: 'c17', x: 170, y: 323.8935, flip: false },
+      { id: 'c18', x: 136, y: 323.8935, flip: false },
+      { id: 'c19', x: 102, y: 323.8935, flip: false },
+      { id: 'c20', x: 68, y: 323.8935, flip: false },
+      { id: 'c21', x: 34, y: 323.8935, flip: false },
+      { id: 'c23', x: 221, y: 294.4486, flip: true },
+      { id: 'c24', x: 187, y: 294.4486, flip: true },
+      { id: 'c25', x: 153, y: 294.4486, flip: true },
+      { id: 'c26', x: 119, y: 294.4486, flip: true },
+      { id: 'c27', x: 85, y: 294.4486, flip: true },
+      { id: 'c28', x: 51, y: 294.4486, flip: false },
+      { id: 'c29', x: 17, y: 294.4486, flip: false },
+      { id: 'c30', x: 238, y: 265.0038, flip: false },
+      { id: 'c31', x: 204, y: 265.0038, flip: false },
+      { id: 'c32', x: 170, y: 265.0038, flip: true },
+      { id: 'c33', x: 136, y: 265.0038, flip: false },
+      { id: 'c34', x: 102, y: 265.0038, flip: false },
+      { id: 'c35', x: 68, y: 265.0038, flip: true },
+      { id: 'c36', x: 34, y: 265.0038, flip: true },
+      { id: 'c38', x: 221, y: 235.5589, flip: false },
+      { id: 'c39', x: 187, y: 235.5589, flip: false },
+      { id: 'c40', x: 153, y: 235.5589, flip: true },
+      { id: 'c41', x: 119, y: 235.5589, flip: false },
+      { id: 'c42', x: 85, y: 235.5589, flip: false },
+      { id: 'c43', x: 51, y: 235.5589, flip: true },
+      { id: 'c44', x: 17, y: 235.5589, flip: true },
+      { id: 'c45', x: 238, y: 206.114, flip: true },
+      { id: 'c46', x: 204, y: 206.114, flip: true },
+      { id: 'c47', x: 170, y: 206.114, flip: false },
+      { id: 'c48', x: 136, y: 206.114, flip: true },
+      { id: 'c49', x: 102, y: 206.114, flip: true },
+      { id: 'c50', x: 68, y: 206.114, flip: false },
+      { id: 'c51', x: 34, y: 206.114, flip: false },
+      { id: 'c53', x: 221, y: 176.6692, flip: true },
+      { id: 'c54', x: 187, y: 176.6692, flip: true },
+      { id: 'c55', x: 153, y: 176.6692, flip: false },
+      { id: 'c56', x: 119, y: 176.6692, flip: false },
+      { id: 'c57', x: 85, y: 176.6692, flip: true },
+      { id: 'c58', x: 51, y: 176.6692, flip: false },
+      { id: 'c59', x: 17, y: 176.6692, flip: false },
+      { id: 'c60', x: 238, y: 147.2243, flip: false },
+      { id: 'c61', x: 204, y: 147.2243, flip: false },
+      { id: 'c62', x: 170, y: 147.2243, flip: true },
+      { id: 'c63', x: 136, y: 147.2243, flip: true },
+      { id: 'c64', x: 102, y: 147.2243, flip: false },
+      { id: 'c65', x: 68, y: 147.2243, flip: true },
+      { id: 'c66', x: 34, y: 147.2243, flip: true },
+      { id: 'c68', x: 221, y: 117.7795, flip: false },
+      { id: 'c69', x: 187, y: 117.7795, flip: false },
+      { id: 'c70', x: 153, y: 117.7795, flip: true },
+      { id: 'c71', x: 119, y: 117.7795, flip: true },
+      { id: 'c72', x: 85, y: 117.7795, flip: false },
+      { id: 'c73', x: 51, y: 117.7795, flip: true },
+      { id: 'c74', x: 17, y: 117.7795, flip: true },
+      { id: 'c75', x: 238, y: 88.3346, flip: true },
+      { id: 'c76', x: 204, y: 88.3346, flip: true },
+      { id: 'c77', x: 170, y: 88.3346, flip: false },
+      { id: 'c78', x: 136, y: 88.3346, flip: false },
+      { id: 'c79', x: 102, y: 88.3346, flip: false },
+      { id: 'c80', x: 68, y: 88.3346, flip: false },
+      { id: 'c81', x: 34, y: 88.3346, flip: false },
+      { id: 'c83', x: 221, y: 58.8897, flip: true },
+      { id: 'c84', x: 187, y: 58.8897, flip: true },
+      { id: 'c85', x: 153, y: 58.8897, flip: true },
+      { id: 'c86', x: 119, y: 58.8897, flip: true },
+      { id: 'c87', x: 85, y: 58.8897, flip: true },
+      { id: 'c88', x: 51, y: 58.8897, flip: false },
+      { id: 'c89', x: 17, y: 58.8897, flip: false },
+      { id: 'c90', x: 238, y: 29.4449, flip: false },
+      { id: 'c91', x: 204, y: 29.4449, flip: false },
+      { id: 'c92', x: 170, y: 29.4449, flip: true },
+      { id: 'c93', x: 136, y: 29.4449, flip: false },
+      { id: 'c94', x: 102, y: 29.4449, flip: false },
+      { id: 'c95', x: 68, y: 29.4449, flip: true },
+      { id: 'c96', x: 34, y: 29.4449, flip: true },
+      { id: 'c98', x: 221, y: 0, flip: false },
+      { id: 'c99', x: 187, y: 0, flip: false },
+      { id: 'c100', x: 153, y: 0, flip: false },
+      { id: 'c101', x: 119, y: 0, flip: false },
+      { id: 'c102', x: 85, y: 0, flip: true },
+      { id: 'c103', x: 51, y: 0, flip: true }
+    ],
+    islands: {
+      top: [
+        { id: 'tmwdm4gkm0', name: 'TOP 1', color: '#4fc3f7', cells: ['c6', 'c14', 'c13', 'c5'] },
+        { id: 'tmwdm4kzb1', name: 'TOP 2', color: '#aed581', cells: ['c21', 'c20', 'c28', 'c29', 'c36', 'c35', 'c43', 'c44'] },
+        { id: 'tmwdm4rpv2', name: 'TOP 3', color: '#ffb74d', cells: ['c51', 'c50', 'c58', 'c59', 'c66', 'c65', 'c73', 'c74'] },
+        { id: 'tmwdm4x933', name: 'TOP 4', color: '#ba68c8', cells: ['c81', 'c80', 'c88', 'c89', 'c96', 'c95', 'c103', 'c102'] },
+        { id: 'tmwdm531a4', name: 'TOP 5', color: '#4db6ac', cells: ['c101', 'c100', 'c94', 'c93', 'c92', 'c87', 'c86', 'c85'] },
+        { id: 'tmwdm5hig5', name: 'TOP 6', color: '#e57373', cells: ['c79', 'c78', 'c77', 'c72', 'c71', 'c70', 'c63', 'c62'] },
+        { id: 'tmwdm5u256', name: 'TOP 7', color: '#fff176', cells: ['c64', 'c57', 'c56', 'c55', 'c49', 'c48', 'c47', 'c40'] },
+        { id: 'tmwdm66wg7', name: 'TOP 8', color: '#9575cd', cells: ['c42', 'c41', 'c34', 'c33', 'c32', 'c27', 'c26', 'c25'] },
+        { id: 'tmwdm6ehe8', name: 'TOP 9', color: '#f06292', cells: ['c19', 'c18', 'c17', 'c12', 'c11', 'c10', 'c4', 'c3'] },
+        { id: 'tmwdm6lg09', name: 'TOP 10', color: '#90a4ae', cells: ['c2', 'c1', 'c9', 'c8', 'c16', 'c15', 'c24', 'c23'] },
+        { id: 'tmwdm6rmx10', name: 'TOP 11', color: '#a1887f', cells: ['c31', 'c30', 'c38', 'c39', 'c46', 'c45', 'c53', 'c54'] },
+        { id: 'tmwdm6y4511', name: 'TOP 12', color: '#7986cb', cells: ['c61', 'c60', 'c68', 'c69', 'c76', 'c75', 'c83', 'c84'] },
+        { id: 'tmwdm733112', name: 'TOP 13', color: '#4fc3f7', cells: ['c91', 'c90', 'c98', 'c99'] }
+      ],
+      bottom: [
+        { id: 'bmwdm9yd20', name: 'BOT 1', color: '#4fc3f7', cells: ['c98', 'c99', 'c91', 'c90', 'c83', 'c84', 'c76', 'c75'] },
+        { id: 'bmwdmaabh1', name: 'BOT 2', color: '#4fc3f7', cells: ['c68', 'c69', 'c61', 'c60', 'c53', 'c54', 'c46', 'c45'] },
+        { id: 'bmwdmagog2', name: 'BOT 3', color: '#4fc3f7', cells: ['c38', 'c39', 'c31', 'c30', 'c23', 'c24', 'c16', 'c15'] },
+        { id: 'bmwdmakrr3', name: 'BOT 4', color: '#4fc3f7', cells: ['c8', 'c9', 'c1', 'c2', 'c3', 'c4', 'c11', 'c10'] },
+        { id: 'bmwdmaqxd4', name: 'BOT 5', color: '#4fc3f7', cells: ['c12', 'c19', 'c18', 'c17', 'c25', 'c26', 'c27', 'c32'] },
+        { id: 'bmwdmb0725', name: 'BOT 6', color: '#4fc3f7', cells: ['c33', 'c41', 'c42', 'c40', 'c48', 'c49', 'c57', 'c34'] },
+        { id: 'bmwdmb5y96', name: 'BOT 7', color: '#4fc3f7', cells: ['c47', 'c55', 'c56', 'c64', 'c63', 'c62', 'c70', 'c71'] },
+        { id: 'bmwdmbnxt7', name: 'BOT 8', color: '#4fc3f7', cells: ['c72', 'c78', 'c79', 'c77', 'c85', 'c86', 'c87', 'c92'] },
+        { id: 'bmwdmby3e8', name: 'BOT 9', color: '#4fc3f7', cells: ['c100', 'c93', 'c94', 'c101', 'c102', 'c95', 'c96', 'c103'] },
+        { id: 'bmwdmcw7g9', name: 'BOT 10', color: '#4fc3f7', cells: ['c88', 'c89', 'c80', 'c81', 'c73', 'c74', 'c66', 'c65'] },
+        { id: 'bmwdmd18n10', name: 'BOT 11', color: '#4fc3f7', cells: ['c58', 'c59', 'c51', 'c50', 'c43', 'c44', 'c36', 'c35'] },
+        { id: 'bmwdmd60c11', name: 'BOT 12', color: '#4fc3f7', cells: ['c28', 'c29', 'c21', 'c20', 'c13', 'c14', 'c6', 'c5'] }
+      ]
+    },
+    params: {
+      cellD: 33.4, gap: 0.6, pitch: 34, padD: 26,
+      bridgeW: 26, kerf: 0.1, margin: 8, step: 0.1,
+      cut: 'plate', lineAngle: 90, guides: false, guideL: 8
+    },
+    terminals: {
+      neg: { face: 'top', cell: 'c6' },
+      pos: { face: 'top', cell: 'c98' }
+    }
+  };
+
   function defaultDoc() {
-    var doc = {
-      version: 1,
-      name: 'my pack',
-      cellType: '21700',
-      arrangement: 'hex',
-      cells: [],
-      islands: { top: [], bottom: [] },
-      params: {
-        cellD: 21.2, gap: 0.6, pitch: 21.8, padD: 18, bridgeW: 18,
-        kerf: 0.1, margin: 8, step: 0.1,
-        cut: 'plate', lineAngle: 90, guides: false, guideL: 8
-      }
-    };
-    fillGrid(doc, 13, 8);
-    return doc;
+    return JSON.parse(JSON.stringify(DEFAULT_PACK));
   }
 
   function fillGrid(doc, rows, cols) {

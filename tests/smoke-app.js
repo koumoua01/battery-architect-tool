@@ -170,7 +170,10 @@ const harness = `
   /* ---------------------------------------------------------------- */
   /* pack ends and the main current path                               */
   /* ---------------------------------------------------------------- */
-  P(txt('sEnds') === '\\u2212 - / + -', 'no pack ends at boot', txt('sEnds'));
+  /* the pack the app opens on arrives with both of its ends already placed,
+     so this section starts from a bare pack: it is about placing them by hand */
+  document.getElementById('btnTermClear').click();
+  P(txt('sEnds') === '\\u2212 - / + -', 'clearing both ends leaves none', txt('sEnds'));
   var pair = bestFlowPair();
   P(!!pair, 'found two islands with a series path',
     pair ? pair.neg.name + ' -> ' + pair.pos.name + ' (' + pair.p.cells.length + ' cells)' : 'none');
@@ -334,14 +337,22 @@ const harness = `
   /* rows                                                              */
   /* ---------------------------------------------------------------- */
   var rows = document.querySelectorAll('#rowsList li');
-  P(rows.length === 13, 'one row entry per row of the pack', rows.length + ' rows');
+  /* the expected row count comes from the document, so the check does not
+     depend on which pack the app ships as its first-run default */
+  var packRows = (function () {
+    var ys = {}, cs = B.state.doc.cells;
+    for (var i = 0; i < cs.length; i++) ys[Math.round(cs[i].y * 100)] = 1;
+    return Object.keys(ys).length;
+  })();
+  P(rows.length === packRows, 'one row entry per row of the pack', rows.length + ' of ' + packRows + ' rows');
   var plus = rows[0].querySelectorAll('.rb')[1];
   var minus = rows[0].querySelectorAll('.rb')[0];
   var c0 = cells();
+  var rowN = parseInt(rows[0].querySelector('.rc').textContent, 10);
   plus.click();
   P(cells() === c0 + 1, 'the + button adds a cell to that row', c0 + ' -> ' + cells());
   var rowTxt = document.querySelectorAll('#rowsList li')[0].querySelector('.rc').textContent;
-  P(/^9 cell/.test(rowTxt), 'the row count follows the click', rowTxt.trim());
+  P(rowTxt.indexOf((rowN + 1) + ' cell') === 0, 'the row count follows the click', rowTxt.trim());
   minus.click();
   P(cells() === c0, 'the - button takes it back off', cells() + ' cells');
 
@@ -382,6 +393,13 @@ const harness = `
   P(range('padD').style.getPropertyValue('--p').slice(-1) === '%',
     'the filled track follows the value', range('padD').style.getPropertyValue('--p'));
 
+  /* The shipped pack carries its own pad and strap, and those are not the plate
+     recipe the arrows reset to, so the panel starts with some numbers flagged.
+     Clear them here: the counts below are about what these clicks change. */
+  document.getElementById('btnGeomReset').click();
+  var flagged = function () { return document.querySelectorAll('#geom .sl:not([hidden]).changed').length; };
+  P(flagged() === 0, 'the arrows leave a panel with nothing flagged', flagged() + ' flagged');
+
   /* the complaint: a drag used to do nothing until the button came up. Press,
      move, and look at the sheet with the thumb still down. Strap W is the
      honest probe - the pads sit inside the straps, so a pad change barely
@@ -398,7 +416,7 @@ const harness = `
   P(areaMid < area0 - 1000, 'the metal follows the thumb', area0 + ' -> ' + areaMid + ' mm2');
   P(B.state.sheets.bottom === null, 'only the face on screen is traced mid-drag');
   P(txt('bridgeWv') === '10.0', 'the number follows the thumb', txt('bridgeWv'));
-  P(document.querySelectorAll('#geom .sl.changed').length === 1, 'the row is marked as changed');
+  P(flagged() === 1, 'the row is marked as changed', flagged() + ' flagged');
 
   commitRange('bridgeW');
   P(B.state.sheets.bottom !== null, 'releasing the thumb puts the other face back');
@@ -458,7 +476,10 @@ const harness = `
   P(txt('btnGeomReset') === 'reset', 'the widths the mode wants are its defaults, so nothing is flagged',
     txt('btnGeomReset'));
   var cutArea = topArea();
-  P(cutArea < cut0 * 0.55, 'the strip uses a fraction of the metal',
+  /* how much a routed strip keeps depends on the cell: a 33.4 mm cell leaves
+     proportionally more metal under the bands than a 21.2 mm one, so the bound
+     is loose - it is here to catch "the cut did nothing", not to pin a ratio */
+  P(cutArea < cut0 * 0.7, 'the strip uses a fraction of the metal',
     cut0 + ' -> ' + cutArea + ' mm2, ' + Math.round(cutArea / cut0 * 100) + '%');
   P(B.state.sheets.bottom !== null, 'both faces are built for the new cut');
   P(partsOk(), 'every routed strip is one piece');
@@ -749,13 +770,35 @@ const harness = `
   P(B.state.doc.params.padD === 10 && B.state.doc.params.guideL === 6,
     'one ctrl+z puts the pad and the slit back', B.state.doc.params.padD + ' mm pad, ' + B.state.doc.params.guideL + ' mm slit');
 
-  /* the bottom sheet gets its own slits, mirrored with it */
-  var topSlotX = B.state.sheets.top.islands[0].slots[0].map(function (p) { return p.x; });
+  /* the bottom sheet gets its own slits, mirrored with it. The two faces do not
+     have to be striped the same way, so the probe is one cell and its own slit
+     on each face rather than "island 0" on both. */
+  function slitAt(face, c) {
+    var g = guideAt(c, face), best = null, bd = 4;
+    var sh = B.state.sheets[face];
+    if (!sh) return null;
+    sh.islands.forEach(function (isl) {
+      (isl.slots || []).forEach(function (loop) {
+        var sx = 0, sy = 0;
+        for (var i = 0; i < loop.length; i++) { sx += loop[i].x; sy += loop[i].y; }
+        sx /= loop.length; sy /= loop.length;
+        var d = Math.sqrt((sx - g.x) * (sx - g.x) + (sy - g.y) * (sy - g.y));
+        if (d < bd) { bd = d; best = { x: sx, y: sy }; }
+      });
+    });
+    return best;
+  }
+  var topSlit = slitAt('top', gcell);
   key('b');
   P(slotsOn('bottom') > 0, 'the bottom sheet is slitted too', slotsOn('bottom') + ' slits');
-  var botSlotX = B.state.sheets.bottom.islands[0].slots[0].map(function (p) { return p.x; });
-  P(Math.abs((B.state.sheets.bottom.W - Math.max.apply(null, botSlotX)) - Math.min.apply(null, topSlotX)) < 0.01,
-    'and its slits are mirrored with the sheet');
+  var botSlit = slitAt('bottom', gcell);
+  P(!!topSlit && !!botSlit &&
+    Math.abs((B.state.frame.W - botSlit.x) - topSlit.x) < 0.05 &&
+    Math.abs(botSlit.y - topSlit.y) < 0.05,
+    'and its slits are mirrored with the sheet',
+    topSlit && botSlit ? 'x ' + topSlit.x.toFixed(2) + ' vs ' +
+      (B.state.frame.W - botSlit.x).toFixed(2) + ', y ' +
+      topSlit.y.toFixed(2) + ' vs ' + botSlit.y.toFixed(2) : 'no slit found');
   key('t');
 
   document.getElementById('guideOn').click();

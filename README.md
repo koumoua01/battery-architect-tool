@@ -64,6 +64,12 @@ to move the view, double-clicking a piece in either island list frames that
 piece without hunting for it, and clicking a row's colour swatch gives that
 piece the next colour no other piece is using.
 
+The app opens on a finished pack: a 14-row staggered layout of 33.4 mm cells,
+already striped into 13 top and 12 bottom islands, with both pack ends marked
+and the main current path drawn. It is what a browser with nothing saved yet
+starts from; your own edits are saved in the browser as you go. *Empty* clears
+it, and *Fill grid* lays out a fresh pack from the row and column numbers.
+
 ![A paint stroke in progress](out/ui-paint.png)
 
 A paint stroke is live. The islands it touches are re-traced while the button

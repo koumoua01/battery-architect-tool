@@ -79,14 +79,18 @@ const AREA = `(() => { const S = window.__ba.state;
   const sum = f => (S.sheets[f] ? Math.round(S.sheets[f].islands.reduce((a, i) => a + i.area, 0)) : -1);
   return { top: sum('top'), bottom: sum('bottom') }; })()`;
 const VAL = `window.__ba.state.doc.params.padD`;
-const SHOWN = `(function(){ const r = document.getElementById('padD').getBoundingClientRect();
-  return { x: r.x, y: r.y, w: r.width, h: r.height, v: parseFloat(document.getElementById('padD').value) }; })()`;
+/* the range of the slider is read from the element, not assumed: Pad D tops out
+   at the cell diameter, so the shipped pack decides how wide the track is */
+const SHOWN = `(function(){ const el = document.getElementById('padD');
+  const r = el.getBoundingClientRect();
+  return { x: r.x, y: r.y, w: r.width, h: r.height, v: parseFloat(el.value),
+           lo: parseFloat(el.min), hi: parseFloat(el.max) }; })()`;
 
 /* The native thumb is 14 px wide: its centre travels from 7 px to (width - 7),
    which is the geometry the browser uses to place it. */
 function thumbX(box) {
-  const lo = 6, hi = 20.8, thumb = 14, span = hi - lo;
-  return Math.round(box.x + thumb / 2 + (box.w - thumb) * ((box.v - lo) / span));
+  const thumb = 14, span = box.hi - box.lo;
+  return Math.round(box.x + thumb / 2 + (box.w - thumb) * ((box.v - box.lo) / span));
 }
 
 (async () => {
@@ -114,6 +118,14 @@ function thumbX(box) {
        length row sits above Pad D and is hidden until the slits are on */
     await c.ev(`document.getElementById('padD').scrollIntoView({ block: 'center' })`);
     await sleep(250);
+
+    /* the shipped pack has its own pad, which is not the plate recipe the
+       arrows restore; clear the panel first so the header counts below are
+       about the drag and nothing else */
+    await c.ev(`document.getElementById('btnGeomReset').click()`);
+    await sleep(250);
+    const clean = await c.ev(`document.getElementById('btnGeomReset').textContent`);
+    ok(clean === 'reset', 'the geometry panel starts with nothing flagged', clean);
 
     const boot = await c.ev(AREA);
     ok(boot.top > 0 && boot.bottom > 0, 'the pack is on screen', JSON.stringify(boot));

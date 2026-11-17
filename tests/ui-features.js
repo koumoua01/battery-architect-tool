@@ -113,25 +113,29 @@ function txt(id) { return document.getElementById(id) ? '' : ''; }
     P(await state('document.getElementById("btnUndo").disabled'), 'undo starts disabled');
     P(await state('document.getElementById("btnRedo").disabled'), 'redo starts disabled');
 
+    /* counts are taken from the pack the app opened on, not hard coded: the
+       shipped default is a document, and changing it must not break redo */
+    const N0 = await state('window.__ba.state.doc.cells.length');
+
     await click('btnToolDel');
     await clickCell();
     P((await state('window.__ba.state.pick.size')) === 1, 'a cell is picked');
     await key('Delete');
     await sleep(250);
-    P((await state('window.__ba.state.doc.cells.length')) === 97, 'Del removes the picked cell');
+    P((await state('window.__ba.state.doc.cells.length')) === N0 - 1, 'Del removes the picked cell');
     P(!(await state('document.getElementById("btnUndo").disabled')), 'undo lights up');
     P(await state('document.getElementById("btnRedo").disabled'), 'redo is still empty');
 
     await click('btnUndo');
     await sleep(200);
-    P((await state('window.__ba.state.doc.cells.length')) === 98, 'the toolbar undo brings it back');
+    P((await state('window.__ba.state.doc.cells.length')) === N0, 'the toolbar undo brings it back');
     P(!(await state('document.getElementById("btnRedo").disabled')), 'redo lights up after undo');
     await click('btnRedo');
     await sleep(200);
-    P((await state('window.__ba.state.doc.cells.length')) === 97, 'redo removes it again');
+    P((await state('window.__ba.state.doc.cells.length')) === N0 - 1, 'redo removes it again');
     await click('btnUndo');
     await sleep(200);
-    P((await state('window.__ba.state.doc.cells.length')) === 98, 'undo restores the pack again');
+    P((await state('window.__ba.state.doc.cells.length')) === N0, 'undo restores the pack again');
 
     /* a fresh edit clears the redo branch */
     P(!(await state('document.getElementById("btnRedo").disabled')), 'redo is available before the new edit');
@@ -140,7 +144,7 @@ function txt(id) { return document.getElementById(id) ? '' : ''; }
     P(await state('document.getElementById("btnRedo").disabled'), 'a new edit clears redo');
     await click('btnUndo');
     await sleep(250);
-    P((await state('window.__ba.state.doc.cells.length')) === 98, 'the row add is undone');
+    P((await state('window.__ba.state.doc.cells.length')) === N0, 'the row add is undone');
 
     /* keyboard redo */
     await click('btnToolDel');
@@ -149,10 +153,10 @@ function txt(id) { return document.getElementById(id) ? '' : ''; }
     await sleep(200);
     await key('z', { ctrlKey: true });
     await sleep(200);
-    P((await state('window.__ba.state.doc.cells.length')) === 98, 'Ctrl+Z still undoes');
+    P((await state('window.__ba.state.doc.cells.length')) === N0, 'Ctrl+Z still undoes');
     await ev("document.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,shiftKey:true,bubbles:true}))");
     await sleep(200);
-    P((await state('window.__ba.state.doc.cells.length')) === 97, 'Ctrl+Shift+Z redoes');
+    P((await state('window.__ba.state.doc.cells.length')) === N0 - 1, 'Ctrl+Shift+Z redoes');
     await click('btnUndo');
     await sleep(200);
 
